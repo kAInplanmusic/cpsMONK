@@ -1,0 +1,8 @@
+cpsMONK / NORMAL XIAO ESP32-S3 / SSD1306 128x32 / INMP441
+Preferred: use PlatformIO from the source project (see README-DE.md).
+Alternative with esptool 4.x installed, actual board port in place of /dev/ttyACM0:
+python -m esptool --chip esp32s3 --port /dev/ttyACM0 --baud 460800 write_flash 0x0 cpsmonk-xiao-oled-merged.bin
+Merged image includes bootloader, partition table, boot_app0 and application.
+DO NOT flash firmware.bin alone at 0x0. That application belongs at 0x10000.
+Flashing replaces the board firmware. Disconnect machine electronics; USB powers the measurement board.
+No flash has been performed by this package script. No erase_flash step required.
