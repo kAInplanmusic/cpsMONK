@@ -1,7 +1,9 @@
 #include "signal_processor.h"
 #include <esp_log.h>
 #include <math.h>
-#include <arm_math.h>
+#include <dsp_common.h>
+#include "dsps_fft2r.h"
+#include "dsps_wind_hann.h"
 
 static const char* TAG = "SignalProcessor";
 
@@ -23,9 +25,9 @@ SignalProcessor::~SignalProcessor() {
 bool SignalProcessor::init() {
     ESP_LOGI(TAG, "Initializing signal processor...");
     
-    // Allocate FFT buffers
-    _fftInput = (float*)malloc(FFT_SIZE * sizeof(float));
-    _fftOutput = (float*)malloc(FFT_SIZE * sizeof(float));
+    // Allocate FFT buffers (ESP-DSP: interleaved re/im -> 2*FFT_SIZE floats)
+    _fftInput = (float*)malloc(2 * FFT_SIZE * sizeof(float));
+    _fftOutput = (float*)malloc(2 * FFT_SIZE * sizeof(float));
     _window = (float*)malloc(FFT_SIZE * sizeof(float));
     _waveformBuffer = (int16_t*)malloc(RINGBUFFER_SIZE * sizeof(int16_t));
     
@@ -98,10 +100,21 @@ bool SignalProcessor::computeFFT() {
         _fftInput[i] = sample * _window[i];
     }
     
-    // Perform real FFT using CMSIS-DSP
-    arm_rfft_fast_instance_f32 fft_inst;
-    arm_rfft_fast_init_f32(&fft_inst, FFT_SIZE);
-    arm_rfft_fast_f32(&fft_inst, _fftInput, _fftOutput, 0);
+    // Perform real FFT using ESP-DSP (S3-Hardwareoptimiert, In-Place, interleaved re/im)
+    static bool fft_initialized = false;
+    if (!fft_initialized) {
+        esp_err_t ret = dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "ESP-DSP FFT init failed: %d", ret);
+            return;
+        }
+        fft_initialized = true;
+    }
+    // ESP-DSP arbeitet in-place: Output ueberschreibt Input, interleaved [re0,im0,re1,im1,...]
+    dsps_fft2r_fc32(_fftInput, FFT_SIZE);
+    dsps_bit_rev_fc32(_fftInput, FFT_SIZE);
+    // _fftOutput zeigt auf dieselben interleaved Daten
+    memcpy(_fftOutput, _fftInput, FFT_SIZE * 2 * sizeof(float));
     
     // Convert to magnitude spectrum in dB
     float peak_mag = 0.0f;
@@ -186,7 +199,7 @@ bool SignalProcessor::detectPeaks(size_t minDistance, float threshold) {
     return peaks_detected;
 }
 
-size_t SignalProcessor::getWaveformData(int16_t* buffer, size_t samples) {
+size_t SignalProcessor::getWaveformData(int16_t* buffer, size_t samples) const {
     if (!buffer || samples == 0) {
         return 0;
     }
@@ -215,7 +228,7 @@ float SignalProcessor::calculateCPS(float windowSec) {
     return (float)count / windowSec;
 }
 
-std::vector<float> SignalProcessor::getImpactIntervalStats() {
+std::vector<float> SignalProcessor::getImpactIntervalStats() const {
     std::vector<float> stats = {0.0f, 0.0f, 0.0f, 0.0f};  // mean, stddev, min, max
     
     if (_impactEvents.size() < 2) {

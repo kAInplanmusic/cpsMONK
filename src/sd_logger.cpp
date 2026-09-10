@@ -31,7 +31,7 @@ String SDLogger::logMeasurement(const AdvancedImpactAnalyzer& analyzer, LogForma
     }
     
     String filename = generateFilename(format);
-    File file = _sd.open(filename, FILE_WRITE);
+    FsFile file = _sd.open(filename, FILE_WRITE);
     
     if (!file) {
         ESP_LOGE(TAG, "Failed to open file: %s", filename.c_str());
@@ -79,7 +79,7 @@ String SDLogger::logMeasurement(const AdvancedImpactAnalyzer& analyzer, LogForma
 }
 
 void SDLogger::logWaveform(const AdvancedImpactAnalyzer::ImpactWaveform& waveform,
-                           uint32_t measurement_number, File& file) {
+                           uint32_t measurement_number, FsFile& file) {
     file.printf("Measurement %d, Time %lu ms, Points %d\n",
                measurement_number, waveform.timestamp_ms, waveform.point_count);
     file.println("#, Time_ms, Amplitude, dB, Slope_deg, Energy, Freq_Hz");
@@ -98,7 +98,7 @@ void SDLogger::logWaveform(const AdvancedImpactAnalyzer::ImpactWaveform& wavefor
     file.println();
 }
 
-void SDLogger::logStatistics(const AdvancedImpactAnalyzer::AdvancedStats& stats, File& file) {
+void SDLogger::logStatistics(const AdvancedImpactAnalyzer::AdvancedStats& stats, FsFile& file) {
     file.printf("CPS, %.2f\n", stats.cps_calculated);
     file.printf("Quality Score, %d%%\n", stats.quality_score);
     file.printf("Consistency, %.1f%%\n", stats.consistency_percent);
@@ -117,13 +117,15 @@ std::vector<String> SDLogger::listLogs() {
     
     if (!_initialized) return files;
     
-    File root = _sd.open("/");
+    FsFile root = _sd.open("/");
     if (!root) return files;
     
-    File entry = root.openNextFile();
+    FsFile entry = root.openNextFile();
     while (entry) {
         if (!entry.isDirectory()) {
-            String name = entry.name();
+            char namebuf[64];
+            entry.getName(namebuf, sizeof(namebuf));
+            String name = String(namebuf);
             if (name.endsWith(".csv") || name.endsWith(".json")) {
                 files.push_back(name);
             }
@@ -172,20 +174,20 @@ String SDLogger::generateFilename(LogFormat format) {
     return String(buffer);
 }
 
-void SDLogger::writeCSVHeader(File& file) {
+void SDLogger::writeCSVHeader(FsFile& file) {
     file.println("ESP32-S3 Coil Machine Analyzer - Measurement Log");
     file.printf("Timestamp, %lu\n", millis());
     file.println();
 }
 
-void SDLogger::writeJSONHeader(File& file) {
+void SDLogger::writeJSONHeader(FsFile& file) {
     file.println("{");
     file.printf("  \"timestamp\": %lu,\n", millis());
     file.println("  \"device\": \"ESP32-S3 Coil Analyzer\",");
     file.println("  \"version\": \"3.0\",");
 }
 
-void SDLogger::writePointAsCSV(const AdvancedImpactAnalyzer::MeasurementPoint& point, File& file) {
+void SDLogger::writePointAsCSV(const AdvancedImpactAnalyzer::MeasurementPoint& point, FsFile& file) {
     file.printf("%d, %.2f, %.4f, %.2f, %.1f, %.4f, %.1f\n",
                point.point_number,
                point.time_ms,
@@ -196,7 +198,7 @@ void SDLogger::writePointAsCSV(const AdvancedImpactAnalyzer::MeasurementPoint& p
                point.estimated_freq_hz);
 }
 
-void SDLogger::writePointAsJSON(const AdvancedImpactAnalyzer::MeasurementPoint& point, File& file, bool last) {
+void SDLogger::writePointAsJSON(const AdvancedImpactAnalyzer::MeasurementPoint& point, FsFile& file, bool last) {
     file.printf("      {\"number\": %d, \"time_ms\": %.2f, \"amplitude\": %.4f, \"db\": %.2f}%s\n",
                point.point_number,
                point.time_ms,

@@ -78,6 +78,7 @@
 // FFT CONFIGURATION
 // ============================================================================
 #define FFT_SIZE                2048    // 2048-point FFT
+#define FFT_BIN_COUNT           (FFT_SIZE / 2)  // Interleaved re/im -> FFT_SIZE/2 Bins
 #define FFT_WINDOW_TYPE         HANN    // HANN, HAMMING, BLACKMAN
 #define FFT_SAMPLE_INTERVAL_MS  50      // New FFT every 50ms
 
@@ -137,6 +138,29 @@
 #define DISPLAY_TASK_STACK_SIZE 4096
 #define MICROPHONE_DISTANCE_MM  100.0f
 #define MICROPHONE_ANGLE_DEG    0.0f
+
+// Weitere fehlende Makros (Build-Fix Runde 2 — aus Compiler-Meldungen abgeleitet)
+#define I2S_DMA_BUFF_LEN        1024    // I2S DMA-Bufferlänge (Samples)
+#define I2S_DMA_BUFF_COUNT      8       // I2S DMA-Bufferanzahl
+#define I2S_SAMPLE_RATE         AUDIO_SAMPLE_RATE  // Alias
+#define I2S_SCK_PIN             I2S_BCLK  // Pin-Aliase (config.h-Namen)
+#define I2S_WS_PIN              I2S_WS
+#define I2S_SD_PIN              I2S_DIN
+#define I2S_PORT                I2S_NUM
+#define SD_CS_PIN               SD_CS     // SD-Pin-Alias
+#define COLOR_LIGHT_GRAY        0xCE79  // helleres Grau
+#define COLOR_DARK_GRAY         0x4208  // dunkleres Grau
+#define FONT_SIZE_SMALL         1       // TFT_eSPI Textsize
+#define FONT_SIZE_MEDIUM        2
+#define FONT_SIZE_LARGE         4
+#define RINGBUFFER_SIZE         4096    // Waveform-Ringbuffer (Samples)
+#define FREQ_MIN_BAND           100.0f  // Bandpass untere Grenze (Hz)
+#define FREQ_MAX_BAND           8000.0f // Bandpass obere Grenze (Hz)
+#define JITTER_MAX_ACCEPTABLE   2.0f    // max. akzeptierter Jitter (ms)
+#define MIC_GAIN_DB             0.0f    // Default-Mikrofonverstärkung
+#define MIC_REFERENCE_LEVEL     1000.0f // Kalibrier-Referenz (16-bit Amplitude)
+#define PEAK_MIN_DISTANCE       5       // Mindestabstand Peaks (ms) — s. PEAK_MIN_DISTANCE_MS
+#define USE_PSRAM               0       // XIAO hat kein PSRAM
 
 // ============================================================================
 // WAVEFORM ANALYSIS

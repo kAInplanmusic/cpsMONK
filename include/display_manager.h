@@ -2,6 +2,7 @@
 #define DISPLAY_MANAGER_H
 
 #include <Arduino.h>
+#include <stdarg.h>
 #include <TFT_eSPI.h>
 #include "config.h"
 #include "signal_processor.h"
@@ -208,6 +209,28 @@ private:
      * @param status Status text (e.g., "Recording", "Standby")
      */
     void drawStatusBar(const char* title, const char* status);
+
+    // ========== Forwarding für direkte TFT-Zeichnung (Minimal-UI + AdvancedUI) ==========
+public:
+    void setTextSize(uint8_t size) { _tft.setTextSize(size); }
+    void setTextColor(uint16_t fg, uint16_t bg = TFT_BLACK) { _tft.setTextColor(fg, bg); }
+    void setCursor(int16_t x, int16_t y) { _tft.setCursor(x, y); }
+    void print(const String& s) { _tft.print(s); }
+    void println(const String& s) { _tft.println(s); }
+    void fillRect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t c) { _tft.fillRect(x, y, w, h, c); }
+    void drawRect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t c) { _tft.drawRect(x, y, w, h, c); }
+    void drawLine(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t c) { _tft.drawLine(x0, y0, x1, y1, c); }
+    void fillCircle(int32_t x0, int32_t y0, int32_t r, uint32_t c) { _tft.fillCircle(x0, y0, r, c); }
+    void drawCircle(int32_t x0, int32_t y0, int32_t r, uint32_t c) { _tft.drawCircle(x0, y0, r, c); }
+    void fillScreen(uint32_t c) { _tft.fillScreen(c); }
+    void printf(const char* fmt, ...) {
+        char buf[64];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        _tft.print(buf);
+    }
 };
 
 #endif // DISPLAY_MANAGER_H

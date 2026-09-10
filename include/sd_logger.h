@@ -2,6 +2,7 @@
 #define SD_LOGGER_H
 
 #include <Arduino.h>
+
 #include <SdFat.h>
 #include "config.h"
 #include "advanced_impact_analyzer.h"
@@ -53,14 +54,14 @@ public:
      * @param file Output file stream
      */
     void logWaveform(const AdvancedImpactAnalyzer::ImpactWaveform& waveform,
-                     uint32_t measurement_number, File& file);
+                     uint32_t measurement_number, FsFile& file);
     
     /**
      * Log statistics summary
      * @param stats Statistics to log
      * @param file Output file stream
      */
-    void logStatistics(const AdvancedImpactAnalyzer::AdvancedStats& stats, File& file);
+    void logStatistics(const AdvancedImpactAnalyzer::AdvancedStats& stats, FsFile& file);
     
     /**
      * Get list of log files
@@ -81,7 +82,7 @@ public:
     uint64_t getFreeSpace() const;
     
 private:
-    SdFat _sd;
+    mutable SdFat _sd;  // mutable: freeClusterCount() ist nicht const, logisch aber read-only
     bool _initialized;
     static const uint8_t SD_CS_PIN = 10;  // Configure per your setup
     
@@ -94,22 +95,22 @@ private:
     /**
      * Write CSV header
      */
-    void writeCSVHeader(File& file);
+    void writeCSVHeader(FsFile& file);
     
     /**
      * Write JSON header
      */
-    void writeJSONHeader(File& file);
+    void writeJSONHeader(FsFile& file);
     
     /**
      * Write measurement point as CSV row
      */
-    void writePointAsCSV(const AdvancedImpactAnalyzer::MeasurementPoint& point, File& file);
+    void writePointAsCSV(const AdvancedImpactAnalyzer::MeasurementPoint& point, FsFile& file);
     
     /**
      * Write measurement point as JSON
      */
-    void writePointAsJSON(const AdvancedImpactAnalyzer::MeasurementPoint& point, File& file, bool last = false);
+    void writePointAsJSON(const AdvancedImpactAnalyzer::MeasurementPoint& point, FsFile& file, bool last = false);
 };
 
 #endif // SD_LOGGER_H

@@ -406,9 +406,9 @@ void AdvancedImpactAnalyzer::calculateQualityScore(ImpactWaveform& waveform) {
     
     // Consistency score
     if (_waveforms.size() > 1) {
-        float period_diff = abs(waveform.timestamp_ms - _lastWaveform.timestamp_ms);
+        float period_diff = fabsf((float)(waveform.timestamp_ms - _lastWaveform.timestamp_ms));
         if (period_diff > 0) {
-            waveform.consistency_score = (uint8_t)(100.0f - abs(period_diff - _stats.mean_period_ms) / _stats.mean_period_ms * 100.0f);
+            waveform.consistency_score = (uint8_t)(100.0f - fabsf(period_diff - _stats.mean_period_ms) / _stats.mean_period_ms * 100.0f);
         } else {
             waveform.consistency_score = 100;
         }

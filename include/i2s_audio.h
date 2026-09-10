@@ -89,7 +89,7 @@ public:
     uint16_t getPeakAmplitude();
 
 private:
-    static const size_t RINGBUFFER_SIZE = RINGBUFFER_SIZE;
+    static const size_t _AUDIO_RINGBUFFER_SIZE = RINGBUFFER_SIZE;  // aus config.h (Member nicht wie Makro benennen)
     static const size_t DMA_BUFF_LEN = I2S_DMA_BUFF_LEN;
     static const size_t DMA_BUFF_COUNT = I2S_DMA_BUFF_COUNT;
     

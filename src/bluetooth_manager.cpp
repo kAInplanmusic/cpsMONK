@@ -202,7 +202,7 @@ void BluetoothManager::handleBLECommands() {
     if (!_command_characteristic) return;
     
     if (_command_characteristic->written()) {
-        uint8_t* data = _command_characteristic->value();
+        const uint8_t* data = _command_characteristic->value();
         uint8_t length = _command_characteristic->valueLength();
         
         if (length > 0) {

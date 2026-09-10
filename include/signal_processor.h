@@ -99,7 +99,7 @@ public:
      * @param samples Number of samples to return
      * @return Number of samples returned
      */
-    size_t getWaveformData(int16_t* buffer, size_t samples);
+    size_t getWaveformData(int16_t* buffer, size_t samples) const;
     
     /**
      * Calculate RMS energy
@@ -130,7 +130,7 @@ public:
      * Get statistics of impact intervals
      * @return Array [mean, stddev, min, max] in milliseconds
      */
-    std::vector<float> getImpactIntervalStats();
+    std::vector<float> getImpactIntervalStats() const;
     
     /**
      * Update bandpass filter coefficients
@@ -220,8 +220,10 @@ private:
     /**
      * Update quality score based on current state
      */
+public:
     void updateQualityScore();
     
+private:
     uint8_t _qualityScore;
 };
 
