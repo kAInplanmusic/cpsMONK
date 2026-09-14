@@ -1,5 +1,5 @@
 $ /usr/bin/python3 firmware/xiao_oled/web/generate_header.py
-Generated /home/patrick/cpsMONK/firmware/xiao_oled/web_ui.h (29457 bytes), HTML round-trip exact
+Generated /home/patrick/cpsMONK/firmware/xiao_oled/web_ui.h (30303 bytes), HTML round-trip exact
 
 $ g++ -std=c++11 -Wall -Wextra -Werror -O2 firmware/xiao_oled/tests/test_analyzer.cpp -o /home/patrick/cpsMONK/artifacts/xiao-oled/test-analyzer
 
@@ -13,7 +13,7 @@ PASS auto-start gate: jitter CV above limit rejected -> 'Kein stabiler Impulsstr
 PASS idle abort: 'Kein Impuls erkannt: Motor aus oder Pegel zu niedrig'
 PASS silence: no auto-start, zero impacts
 PASS auto-start: 150 CPS started without user action, n=1000
-PASS level indicator: silent/quiet/good/loud bands and start gate
+PASS level indicator: rate-independent bands, distance sweep, decay, start gate
 PASS changed shape: similarity=57.5137% (first 60 against all 1000 brute-force verified)
 PASS amplitude variation: audio amplitudeCV=50.0273%
 PASS jitter: periodCV=7.9819% warning=1 cps=150.2467
@@ -35,7 +35,7 @@ PASS auto-start gate: jitter CV above limit rejected -> 'Kein stabiler Impulsstr
 PASS idle abort: 'Kein Impuls erkannt: Motor aus oder Pegel zu niedrig'
 PASS silence: no auto-start, zero impacts
 PASS auto-start: 150 CPS started without user action, n=1000
-PASS level indicator: silent/quiet/good/loud bands and start gate
+PASS level indicator: rate-independent bands, distance sweep, decay, start gate
 PASS changed shape: similarity=57.5137% (first 60 against all 1000 brute-force verified)
 PASS amplitude variation: audio amplitudeCV=50.0273%
 PASS jitter: periodCV=7.9819% warning=1 cps=150.2467
@@ -78,27 +78,27 @@ Retrieving maximum program size .pio/build/xiao-oled/firmware.elf
 Checking size .pio/build/xiao-oled/firmware.elf
 Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
 RAM:   [=         ]  13.8% (used 45148 bytes from 327680 bytes)
-Flash: [==        ]  24.5% (used 818893 bytes from 3342336 bytes)
-========================= [SUCCESS] Took 4.62 seconds =========================
+Flash: [==        ]  24.5% (used 819941 bytes from 3342336 bytes)
+========================= [SUCCESS] Took 4.64 seconds =========================
 
 $ /home/patrick/.local/share/pipx/venvs/platformio/bin/python /home/patrick/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 merge_bin -o /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin 0x0 /home/patrick/cpsMONK/artifacts/xiao-oled/bootloader.bin 0x8000 /home/patrick/cpsMONK/artifacts/xiao-oled/partitions.bin 0xe000 /home/patrick/cpsMONK/artifacts/xiao-oled/boot_app0.bin 0x10000 /home/patrick/cpsMONK/artifacts/xiao-oled/firmware.bin
 esptool.py v4.11.0
-Wrote 0xd8040 bytes to file /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin, ready to flash to offset 0x0
+Wrote 0xd8450 bytes to file /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin, ready to flash to offset 0x0
 
 $ /home/patrick/.local/share/pipx/venvs/platformio/bin/python /home/patrick/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 image_info /home/patrick/cpsMONK/artifacts/xiao-oled/firmware.bin
 esptool.py v4.11.0
-File size: 819264 (bytes)
+File size: 820304 (bytes)
 Image version: 1
 Entry point: 4037707c
 5 segments
 
-Segment 1: len 0x251bc load 0x3c090020 file_offs 0x00000018 [DROM]
-Segment 2: len 0x0563c load 0x3fc94db0 file_offs 0x000251dc [BYTE_ACCESSIBLE,MEM_INTERNAL,DRAM]
-Segment 3: len 0x057f0 load 0x40374000 file_offs 0x0002a820 [MEM_INTERNAL,IRAM]
-Segment 4: len 0x8ca28 load 0x42000020 file_offs 0x00030018 [IROM]
-Segment 5: len 0x0b5c0 load 0x403797f0 file_offs 0x000bca48 [MEM_INTERNAL,IRAM]
-Checksum: 34 (valid)
-Validation Hash: 4f6667b3bc78d6631f0d175dea9ee9310086cd900c6268a96f1631d2119cb641 (valid)
+Segment 1: len 0x2551c load 0x3c090020 file_offs 0x00000018 [DROM]
+Segment 2: len 0x0563c load 0x3fc94db0 file_offs 0x0002553c [BYTE_ACCESSIBLE,MEM_INTERNAL,DRAM]
+Segment 3: len 0x05490 load 0x40374000 file_offs 0x0002ab80 [MEM_INTERNAL,IRAM]
+Segment 4: len 0x8cae0 load 0x42000020 file_offs 0x00030018 [IROM]
+Segment 5: len 0x0b920 load 0x40379490 file_offs 0x000bcb00 [MEM_INTERNAL,IRAM]
+Checksum: 75 (valid)
+Validation Hash: 36f459dec44456aa32f87420e35966b1ae3f0450cdf83b953dece27fe273a936 (valid)
 
 PASS merged image: all four images match byte-for-byte at verified offsets.
 NO HARDWARE FLASH OR PHYSICAL VALIDATION PERFORMED.

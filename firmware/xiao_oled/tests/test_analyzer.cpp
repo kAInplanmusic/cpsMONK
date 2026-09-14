@@ -159,31 +159,65 @@ void gateTests() {
         std::cout << "PASS auto-start: 150 CPS started without user action, n=" << a->count() << "\n";
     }
 }
+// Level indicator: tracks stroke amplitude, not average power. A stroke train
+// at 150 CPS occupies only ~4 % of each cycle, so an energy average reports
+// "quiet" for every realistic distance while the amplitude tracks the operator.
 void levelTests() {
     ImpactAnalyzer a;
-    // Idle: samples are ignored by process(), the level monitor is separate.
     a.process(0.5f);
     check(a.state() == State::Idle, "idle ignores samples");
     check(a.levelAssessment() == cps::Level::Silent, "silent before any monitor input");
-    for (int i = 0; i < 200; ++i) a.monitor(0.0f);
-    check(a.levelAssessment() == cps::Level::Silent, "zero input stays silent");
-    for (int i = 0; i < 400; ++i) a.monitor(0.004f);
-    check(a.levelAssessment() == cps::Level::TooQuiet, "below band is too quiet");
-    check(!a.levelWasGood(), "quiet input does not unlock the start gate");
-    for (int i = 0; i < 600; ++i) a.monitor(0.15f);
-    check(a.levelAssessment() == cps::Level::Good, "in band is good");
-    a.levelTouch();
-    check(a.levelWasGood(), "good level unlocks the start gate");
-    for (int i = 0; i < 4000; ++i) a.monitor(0.15f);
-    const float good = a.result().levelRms;
-    for (int i = 0; i < 4000; ++i) a.monitor(0.75f);
-    check(a.levelAssessment() == cps::Level::Warning, "75 % drive is a warning, not yet overload");
-    check(a.result().levelRms > good, "level follows the input");
-    for (int i = 0; i < 4000; ++i) a.monitor(0.97f);
-    check(a.levelAssessment() == cps::Level::TooLoud, "near full scale is too loud");
+    // The evaluation must be stroke-rate independent: the same machine at the
+    // same distance must not need a different setting per speed.
+    auto feedTrain = [](ImpactAnalyzer& target, float amp, double hz, int samples) {
+        const int period = int(cps::SAMPLE_RATE / hz);
+        for (int i = 0; i < samples; ++i) {
+            const int t = i % period;
+            const float stroke = t < 60 ? amp * static_cast<float>(std::exp(-t / 9.0) * std::cos(t * 0.42)) : 0.0f;
+            target.monitor(stroke);
+            target.levelTouch();
+        }
+    };
+    for (double hz : {50.0, 120.0, 150.0, 220.0}) {
+        ImpactAnalyzer b;
+        feedTrain(b, 0.045f, hz, 40000);
+        check(b.levelAssessment() == cps::Level::Good, "nominal level is good at every stroke rate");
+        check(b.levelWasGood(), "nominal level unlocks the start gate");
+    }
+    // Distance sweep must be monotonic through the bands.
+    {
+        ImpactAnalyzer dead; feedTrain(dead, 0.0f, 150, 40000);
+        check(dead.levelAssessment() == cps::Level::Silent, "dead line is silent");
+        check(!dead.levelWasGood(), "dead line never unlocks the gate");
+        ImpactAnalyzer quiet; feedTrain(quiet, 0.002f, 150, 40000);
+        check(quiet.levelAssessment() == cps::Level::TooQuiet, "far distance is too quiet");
+        check(!quiet.levelWasGood(), "too quiet does not unlock the gate");
+        ImpactAnalyzer warn; feedTrain(warn, 0.150f, 150, 40000);
+        check(warn.levelAssessment() == cps::Level::Warning, "too close warns");
+        check(!warn.levelWasGood(), "warning alone does not unlock the gate");
+        ImpactAnalyzer hot; feedTrain(hot, 0.400f, 150, 40000);
+        check(hot.levelAssessment() == cps::Level::TooLoud, "overload is too loud");
+        ImpactAnalyzer nom; feedTrain(nom, 0.045f, 150, 40000);
+        check(nom.result().levelAmplitude > 0.02f && nom.result().levelAmplitude < 0.09f,
+              "held amplitude tracks the stroke peak, not the duty cycle");
+    }
+    // The hold decays with a ~1 s time constant once the machine stops. One
+    // second of silence leaves roughly a third, which is deliberate: the display
+    // must not flicker while the operator watches it.
+    {
+        ImpactAnalyzer decay; feedTrain(decay, 0.045f, 150, 20000);
+        const float held = decay.result().levelAmplitude;
+        for (int i = 0; i < int(cps::SAMPLE_RATE); ++i) decay.monitor(0.0f);   // 1 s silence
+        const float afterOne = decay.result().levelAmplitude;
+        check(afterOne < held * 0.5f && afterOne > held * 0.2f,
+              "one second of silence leaves roughly a third of the held level");
+        for (int i = 0; i < int(cps::SAMPLE_RATE) * 12; ++i) decay.monitor(0.0f); // 12 s more
+        check(decay.result().levelAmplitude < held * 0.01f, "level reaches near zero after ~13 s");
+        check(decay.levelAssessment() == cps::Level::Silent, "decayed level reads as silent");
+    }
     a.reset();
     check(!a.levelWasGood() && a.levelAssessment() == cps::Level::Silent, "reset clears the level gate");
-    std::cout << "PASS level indicator: silent/quiet/good/loud bands and start gate\n";
+    std::cout << "PASS level indicator: rate-independent bands, distance sweep, decay, start gate\n";
 }
 void shapeAndAmplitudeTests() {
     std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);

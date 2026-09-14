@@ -51,6 +51,13 @@ static const float AUTO_START_MAX_CV_PERCENT = 8.0f;
 // trigger) while waiting for strokes or during warm-up leaves the analyzer in
 // a state nobody can interpret, so it must give up with a readable reason.
 static const float IDLE_ABORT_SECONDS = 30.0f;
+// Peak-hold decay per sample, applied multiplicatively. At 32 kHz a factor of
+// 0.99997 is a ~1.0 s time constant: fast enough to follow the operator moving
+// the microphone, slow enough to bridge the gaps between strokes at 50-220 CPS.
+static const float LEVEL_DECAY = 0.99997f;
+// Below this amplitude the input is numerical noise on a floating/dead data
+// line rather than room sound. INMP441 self-noise is far above it.
+static const float LEVEL_SILENT_FLOOR = 1e-5f;
 
 enum class State { Idle, Calibrating, WaitingForMotor, Warmup, Recording, Complete, Failed };
 // Level-indicator band assessment, reported while idle so the operator can set
@@ -64,9 +71,15 @@ struct Config {
     float thresholdFloor = 0.001f;
     // Minimum separation = this fraction of SAMPLE_RATE/maxCps.
     float refractoryFraction = 0.75f;
-    // Level-indicator target window as fraction of full scale (raw input).
-    float levelLow = 0.02f;
-    float levelHigh = 0.60f;
+    // Level-indicator bands, as RMS of the normalized raw input.
+    // Calibrated against the measured monitor response: a stroke series that
+    // drives the detector sits around 0.03-0.06, clipping territory is above
+    // ~0.25. Values are relative and machine dependent by nature; they are
+    // configuration, not constants, because microphone distance and machine
+    // loudness both move them.
+    float levelLow = 0.015f;
+    float levelHigh = 0.12f;
+    float levelLoud = 0.25f;
     // Automatic start once a stable stroke stream is present. Off means the
     // operator triggers every run by hand.
     bool autoStart = true;
@@ -76,7 +89,9 @@ struct Result {
     float amplitudeCvPercent = 0, clippedPercent = 0, noiseRms = 0, threshold = 0;
     // Provisional rate from the warm-up phase and the window it produced.
     float provisionalCps = 0, windowSeconds = 0;
-    float levelRms = 0, levelPeak = 0, levelDb = 0;
+    // Level indicator: held stroke amplitude (normalized input) and its dB value.
+    // Deliberately NOT an RMS: see monitor().
+    float levelAmplitude = 0, levelDb = 0;
     uint32_t rejected = 0;
     bool timingWarning = false, clippingWarning = false;
     // True when the window ended before TARGET strokes were reached.
@@ -122,7 +137,7 @@ public:
         refractory_ = 0; gateImpacts_ = 0; warmupStart_ = 0; windowSamples_ = 0;
         windowSeconds_ = 0; gateOpen_ = false;
         preHead_ = warmupStrokes_ = 0;
-        levelRms_ = levelPeak_ = 0; levelGoodSeen_ = false;
+        levelHold_ = 0; levelGoodSeen_ = false;
         result_ = Result(); error_[0] = '\0';
         std::memset(ring_, 0, sizeof(ring_));
         std::memset(preTimes_, 0, sizeof(preTimes_));
@@ -157,23 +172,37 @@ public:
     // the OLED/web "waiting for motor" and warm-up progress display.
     uint32_t seen() const { return gateImpacts_; }
 
-    // Level indicator for the idle phase: a single smoothed input sample keeps
-    // the operator feedback live without a running measurement. Never used as
-    // a measurement value.
+    // Level indicator for the idle phase: keeps operator feedback live without
+    // a running measurement. Never used as a measurement value.
+    //
+    // Tracks the STROKE AMPLITUDE, not the average power. Measured on synthetic
+    // stroke trains at 150 CPS: a 160 ms RMS stays near 0.005 even when a single
+    // stroke peaks at 0.4, because the impact occupies only ~4 % of each cycle.
+    // An energy average therefore reports "quiet" for every realistic distance,
+    // while the peak-hold below tracks exactly what changes when the microphone
+    // is moved. The hold decays with a ~500 ms time constant so the reading
+    // follows the operator and does not freeze on a single loud event.
     void monitor(float input) {
         const float magnitude = std::fabs(input);
-        levelPeak_ = magnitude > levelPeak_ ? magnitude : levelPeak_ * 0.94f;
-        levelRms_ += 0.05f * (magnitude - levelRms_);
-        if (levelRms_ < 0) levelRms_ = 0;
-        result_.levelRms = levelRms_;
-        result_.levelPeak = levelPeak_;
-        result_.levelDb = levelRms_ > 1e-6f ? 20.0f * std::log10(levelRms_) : -120.0f;
+        // Multiplicative decay, NOT a fixed subtraction. A constant decrement
+        // eats small signals entirely between strokes (at 150 CPS there are 213
+        // idle samples per cycle) while barely touching loud ones, so a quiet
+        // stroke train would read as silence and a loud one as normal. The
+        // exponential form gives every amplitude the same time constant.
+        levelHold_ *= LEVEL_DECAY;
+        if (magnitude > levelHold_) levelHold_ = magnitude;
+        result_.levelAmplitude = levelHold_;
+        // Amplitude relative to full scale, reported in dB for the UI.
+        result_.levelDb = levelHold_ > 1e-9f ? 20.0f * std::log10(levelHold_) : -180.0f;
     }
     Level levelAssessment() const {
-        if (levelRms_ < 1e-6f) return Level::Silent;
-        if (levelRms_ < active_.levelLow) return Level::TooQuiet;
-        if (levelRms_ <= active_.levelHigh) return Level::Good;
-        if (levelRms_ <= active_.levelHigh * 1.5f) return Level::Warning;
+        // A dead data line shows only numerical noise; INMP441 self-noise sits
+        // orders of magnitude above that, so a floor separates "no signal" from
+        // "signal, but quiet" without knowing the absolute calibration.
+        if (levelHold_ < LEVEL_SILENT_FLOOR) return Level::Silent;
+        if (levelHold_ < active_.levelLow) return Level::TooQuiet;
+        if (levelHold_ <= active_.levelHigh) return Level::Good;
+        if (levelHold_ <= active_.levelLoud) return Level::Warning;
         return Level::TooLoud;
     }
     // True once the level indicator sat in the good band. The UI locks the
@@ -259,7 +288,7 @@ private:
     uint32_t preHead_ = 0, warmupStrokes_ = 0;
     double calibrationEnergy_;
     float previousInput_, previousHp_, envelope_, peak_;
-    float levelRms_ = 0, levelPeak_ = 0;
+    float levelHold_ = 0;
     float windowSeconds_;
     bool armed_, pending_, gateOpen_ = false, levelGoodSeen_ = false;
     char error_[96];
@@ -282,7 +311,9 @@ private:
             active_.thresholdFloor > 0 && active_.thresholdMultiplier >= 3 &&
             active_.refractoryFraction >= 0.4f && active_.refractoryFraction <= 1 &&
             std::isfinite(active_.levelLow) && std::isfinite(active_.levelHigh) &&
-            active_.levelLow > 0 && active_.levelHigh > active_.levelLow && active_.levelHigh < 1;
+            std::isfinite(active_.levelLoud) && active_.levelLow > 0 &&
+            active_.levelHigh > active_.levelLow && active_.levelLoud >= active_.levelHigh &&
+            active_.levelLoud < 1;
     }
 
     // Measured CPS over the last n gate/warm-up strokes, or 0 while fewer than

@@ -88,7 +88,11 @@ static void statusInto(JsonObject j) {
     j["thresholdMultiplier"] = analyzer->config.thresholdMultiplier;
     j["thresholdFloor"] = analyzer->config.thresholdFloor;
     j["level"] = levelName(analyzer->levelAssessment());
-    j["levelRms"] = r.levelRms; j["levelDb"] = r.levelDb;
+    j["levelAmplitude"] = r.levelAmplitude; j["levelDb"] = r.levelDb;
+    // Band edges so the UI can draw the target zone and scale the bar honestly.
+    j["levelLow"] = analyzer->config.levelLow;
+    j["levelHigh"] = analyzer->config.levelHigh;
+    j["levelLoud"] = analyzer->config.levelLoud;
     j["levelReady"] = analyzer->levelWasGood();
     j["gateOpen"] = analyzer->gateSatisfied();
     j["autoStart"] = analyzer->config.autoStart;
@@ -152,8 +156,9 @@ static void configure() {
         parseArg("thresholdFloor", c.thresholdFloor, 0.00001f, 0.5f) &&
         parseArg("levelLow", c.levelLow, 0.0001f, 0.9f) &&
         parseArg("levelHigh", c.levelHigh, 0.001f, 0.99f) &&
+        parseArg("levelLoud", c.levelLoud, 0.002f, 0.99f) &&
         parseFlag("autoStart", c.autoStart) && c.minCps < c.maxCps &&
-        c.levelHigh > c.levelLow;
+        c.levelHigh > c.levelLow && c.levelLoud >= c.levelHigh;
     if (ok) { analyzer->config = c; analyzer->reset(); rawCount = 0; ++captureEpoch; }
     unlock(); server.send(ok ? 200 : 400, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Ungueltige Messparameter\"}");
 }
@@ -292,15 +297,20 @@ static bool initAudio() {
 }
 // Level band as a horizontal bar: the operator sets the distance until the bar
 // sits inside the green middle region.
-static void drawLevelBar(int x, int y, int w, int h, float level, cps::Level band) {
+// The panel is monochrome, so the target zone is drawn as a marked region and
+// the bar is scaled to the overload threshold (not to full scale): with a 0.12
+// green ceiling a /1.0 scaling would show the whole usable range as 12 %.
+static void drawLevelBar(int x, int y, int w, int h, float level, float low,
+                         float high, float loud, cps::Level band) {
+    const float span = loud > 0 ? loud : 1.0f;
     oled.drawRect(x, y, w, h, SSD1306_WHITE);
-    int inner = int(level * w);
+    const int zoneLow = int(low / span * w);
+    const int zoneHigh = int(high / span * w);
+    oled.drawRect(x + zoneLow, y - 2, zoneHigh - zoneLow, h + 4, SSD1306_WHITE);
+    int inner = int(level / span * w);
     if (inner > w - 2) inner = w - 2;
     if (inner > 0) oled.fillRect(x + 1, y + 1, inner, h - 2, SSD1306_WHITE);
-    if (band == cps::Level::Good) {
-        // Mark the target band region instead of drawing colour (panel is mono).
-        oled.drawRect(x, y - 2, w, h + 4, SSD1306_WHITE);
-    }
+    (void)band;
 }
 static void drawOled() {
     if (!oledReady || xSemaphoreTake(guard, pdMS_TO_TICKS(5)) != pdTRUE) return;
@@ -326,7 +336,8 @@ static void drawOled() {
             else if (band == cps::Level::Good) oled.print("OK - Abstand passt");
             else if (band == cps::Level::Warning) oled.print("grenzwertig");
             else oled.print("zu laut");
-            drawLevelBar(0, 12, 127, 8, r.levelRms / 1.0f, band);
+            drawLevelBar(0, 12, 127, 8, r.levelAmplitude, analyzer->config.levelLow,
+                         analyzer->config.levelHigh, analyzer->config.levelLoud, band);
             oled.setCursor(0, 24);
             if (band == cps::Level::Silent) oled.print("Kabel/L-R pruefen");
             else if (levelReady) oled.print("Start moeglich");

@@ -86,7 +86,7 @@ Falls USB nicht erscheint: Datenkabel prüfen, BOOT gedrückt halten, RESET kurz
 
 1. Verkabelung im stromlosen Zustand prüfen; USB einschalten.
 2. OLED wird auf 0x3C, danach 0x3D gesucht. Es ist monochrom; frühere TFT-Farbcodes sind hier nicht möglich. Bei fehlendem OLED bleibt USB/WLAN verwendbar.
-   Im Ruhezustand zeigt das OLED abwechselnd den **Pegelindikator** (Balken + Klartext „Abstand ok“ / „zu leise“ / „zu laut“ / „KEIN SIGNAL“) und die WLAN-Zugangsdaten.
+   Im Ruhezustand zeigt das OLED abwechselnd den **Pegelindikator** (Balken mit markierter Zielzone + Klartext „Abstand ok“ / „zu leise“ / „zu laut“ / „KEIN SIGNAL“) und die WLAN-Zugangsdaten.
 3. Das OLED zeigt abwechselnd SSID `cpsMONK-XXXX` und ein zufälliges WLAN-Passwort. Beides wird zusätzlich auf USB-Serial ausgegeben. Passwort wird bei jedem Neustart neu erzeugt.
 4. Smartphone/Computer mit diesem WLAN verbinden. „Kein Internet“ ist normal: Verbindung beibehalten, ggf. automatische Mobilfunk-/WLAN-Umschaltung deaktivieren.
 5. Im Browser ausdrücklich **http://192.168.4.1/** öffnen. Keine Internetverbindung und keine App-Installation nötig. Die bisherige GitHub-Pages-Webapp ist davon unabhängig und wird nicht verändert.
@@ -107,7 +107,7 @@ WLAN ist ein lokaler passwortgeschützter Access Point, keine Internet-/Remoteve
 - Eine Sekunde Ruhekalibrierung, erste 10 ms Einschwingzeit ausgenommen. Erkennungsschwelle = max(Mindestschwelle, Rausch-RMS × Rauschfaktor).
 - **Auto-Start-Gate:** 4 erkannte Impulse, Intervall-CV < 8 %, Impulsrate ≥ 50 CPS. Läuft die Rate unter 50 CPS, bricht die Messung ab (harter Abbruch, keine Warnung). Ohne Auto-Start (Konfiguration `autoStart = 0`) bleibt das Gate geschlossen und der Start erfolgt manuell.
 - Defaultbereich 50–220 CPS; Sperrzeit ist 0,75 / maxCps Sekunden. Das Minimum ist eine Plausibilitätsgrenze **und** das harte Abbruchkriterium, kein Filter, der langsamere Geräusche automatisch ausschließt.
-- Zusätzlich konfigurierbar: Pegelband unten/oben (`levelLow`, `levelHigh`) und Auto-Start (`autoStart`). Die Untergrenze 50 CPS wird in der Firmware (`parseArg`) **und** im Web-Formular durchgesetzt; eine Änderung nur an einer Stelle würde die Grenze wieder öffnen.
+- Zusätzlich konfigurierbar: Pegelband unten/oben (`levelLow`, `levelHigh`), Warnschwelle (`levelLoud`) und Auto-Start (`autoStart`). Die Untergrenze 50 CPS wird in der Firmware (`parseArg`) **und** im Web-Formular durchgesetzt; eine Änderung nur an einer Stelle würde die Grenze wieder öffnen. Dasselbe gilt für die Reihenfolge der Pegelgrenzen (unten < oben ≤ Warnschwelle).
 - Nach jeder Schwellüberschreitung wird während 1 ms die stärkste absolute Spitze gesucht. Festes Fenster von −3 bis +3 ms um diese Spitze: **193 native Samples, linear auf 128 Darstellungs-/Vergleichspunkte** gebracht. Das sind keine 128 unabhängigen Originalsamples. Kein periodennormiertes Zeitstrecken, kein zusätzlicher Lag-Suchlauf.
 - Das 6-ms-Fenster entspricht einem kompletten mechanischen Zyklus (bei 170 CPS gemessen 5,9 ms, siehe `public/impulsbsp.JPG`), sodass Aufschlagpunkt, Wechselpunkt und Zyklusstart gemeinsam in die Formähnlichkeit eingehen. Das frühere 3-ms-Fenster verglich nur den Aufschlag.
 - **Der Vorlauf von 2 s dient ausschließlich der Fensterdimensionierung.** Seine Impulse werden nur als Zeitstempel gezählt, nicht gespeichert und nicht ausgewertet: Anlaufverhalten soll CPS und Formstatistik nicht verfälschen.
@@ -132,6 +132,7 @@ Maximal reserviert: 26 Sekunden PCM16 (1.664.000 Bytes) plus ca. 744 KB Analyzer
 ## 6. Erstvalidierung und Fehlersuche
 
 - Startabstand z.B. 5–10 cm, dann konstant halten. **Der Pegelindikator vor dem Start ist das Hilfsmittel dafür:** grünes Band = Zielbereich, gelb = grenzwertig, rot = zu leise bzw. Übersteuerung. Er zeigt einen relativen Pegel, weder Schalldruckpegel noch einen Abstand in Zentimetern. Ein Vergleich zwischen Messungen ist nur bei konstantem Abstand, Winkel, Untergrund, Maschine/Bestückung und Last sinnvoll.
+- **Der Pegelindikator verfolgt die Impulsamplitude, nicht den Mittelwert.** Ein Schlag belegt bei 120–220 CPS nur etwa 4 % jedes Zyklus; ein Energie-Mittelwert über ein kurzes Fenster bliebe für jeden realistischen Abstand nahe null und würde dauerhaft „zu leise“ anzeigen. Der Wert folgt daher der gehaltenen Spitzenamplitude mit etwa 1 s Abfallzeit und ist damit **unabhängig von der Schlagfrequenz**: dieselbe Maschine am selben Abstand ergibt bei 50 wie bei 220 CPS dasselbe Band. Die Anzeige ist relativ und maschinenabhängig; die Bandgrenzen (`levelLow`, `levelHigh`, `levelLoud`) sind deshalb Konfiguration, keine Konstanten.
 - Keine Erkennung: 3V3/GND prüfen, L/R wirklich an GND, SCK/WS nicht vertauscht, Mikrofonöffnung frei. Ruhekalibrierung mit laufender Maschine setzt die Schwelle fälschlich zu hoch. Roh-WAV nach Timeout ansehen.
 - Etwa doppelte CPS: Vor-/Rückschlag oder Ringing werden getrennt erkannt. WAV ansehen, Frequenzbereich plausibel enger stellen, Schwelle anpassen. Keine automatische Halbierung: ohne unabhängige Referenz wäre das geraten.
 - Halbe CPS: fehlende/leise Impulse, zu hohe Schwelle oder zu lange Sperrzeit. Erwartetes Maximum erhöhen (bis 200) bzw. Sensorposition prüfen.
@@ -155,7 +156,7 @@ python3 firmware/xiao_oled/web/generate_header.py
 PLAYWRIGHT_MODULE=/absoluter/pfad/node_modules/playwright node firmware/xiao_oled/tests/test_ui.cjs
 ```
 
-Die nativen Tests decken zusätzlich ab: Auto-Start-Gate (stabile Reihe startet, Jitter oberhalb des CV-Limits bricht ab), harten 50-CPS-Abbruch, Idle-Abbruch ohne Impulse, Pegelband-Bewertung und Start-Gate, dynamische Fensterlänge innerhalb der Klammergrenzen sowie Laufzeit mit 1000 Impulsen. Der Browser-Test prüft das gesperrte Start-Gate bei unzureichendem Pegel und die count-basierte Wellenformvalidierung.
+Die nativen Tests decken zusätzlich ab: Auto-Start-Gate (stabile Reihe startet, Jitter oberhalb des CV-Limits bricht ab), harten 50-CPS-Abbruch, Idle-Abbruch ohne Impulse, dynamische Fensterlänge innerhalb der Klammergrenzen, Laufzeit mit 1000 Impulsen sowie den Pegelindikator: gleiches Band bei 50/120/150/220 CPS, monotoner Abstands-Sweep (tot → zu leise → grün → Warnung → Übersteuerung), Abfall der Anzeige nach Motorstopp und das Start-Gate. Der Browser-Test prüft das gesperrte Start-Gate bei unzureichendem Pegel und die count-basierte Wellenformvalidierung.
 
 Tests verwenden ausdrücklich synthetische Impulse bzw. eine simulierte HTTP-API. Sie beweisen keine mechanische Zuordnung oder Hardwarefunktion. `VERIFICATION.txt` im Release-Bundle enthält reale Build-/Testausgaben. In dieser Sitzung war kein XIAO-USB-Gerät sichtbar; Firmware wurde nicht geflasht und nicht auf echter Hardware geprüft. GitHub-Push/öffentlicher Deployment erfolgte nicht.
 

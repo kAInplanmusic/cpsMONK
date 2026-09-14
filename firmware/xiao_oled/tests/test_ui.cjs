@@ -16,7 +16,8 @@ const TARGET = 1000;
   timingWarning:false,clippingWarning:false,windowTruncated:false,
   provisionalCps:148,windowSeconds:7.1,error:state==='failed'?'SYNTHETIC test timeout':'',
   minCps:50,maxCps:220,thresholdMultiplier:6,thresholdFloor:0.001,
-  level,levelRms:level==='good'?0.15:level==='loud'?0.9:0.004,levelDb:-16,levelReady,
+  level,levelAmplitude:level==='good'?0.045:level==='loud'?0.4:0.004,levelDb:-27,levelReady,
+  levelLow:0.015,levelHigh:0.12,levelLoud:0.25,
   gateOpen:state!=='idle',autoStart:true,cpsGate:50,warmupSeconds:2,
   rawSamples:400000,sampleRate:32000,wavePoints:128,windowDurationMs:6});
  const waves={sampleRate:32000,wavePoints:128,windowDurationMs:6,count:1000,
@@ -39,6 +40,11 @@ const TARGET = 1000;
  // The level gate must keep the start button locked until the band was good.
  assert(await page.locator('#start').isDisabled(),'start locked before level was good');
  assert((await page.locator('#levelText').innerText()).includes('Abstand ok'),'level text shown');
+ // The bar must scale against the overload threshold, not against full scale.
+ const fill = await page.locator('#levelFill').evaluate(el=>parseFloat(el.style.width));
+ assert(fill>10 && fill<30, 'bar scaled against the overload threshold, got '+fill+'%');
+ const zone = await page.locator('#levelZone').evaluate(el=>[parseFloat(el.style.left),parseFloat(el.style.width)]);
+ assert(zone[0]>0 && zone[0]<15 && zone[1]>30 && zone[1]<60, 'target zone drawn from band edges, got '+zone.join('/'));
  assert.equal(await page.locator('#cps').innerText(),'—');
  levelReady=true;
  await page.waitForFunction(()=>!document.querySelector('#start').disabled);
