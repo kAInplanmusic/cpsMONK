@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build, run synthetic tests, package verified images. Does not flash or push."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -28,7 +29,31 @@ run([OUT/'test-analyzer'])
 run(['g++','-std=c++11','-O1','-g','-fsanitize=address,undefined',
      'firmware/xiao_oled/tests/test_analyzer.cpp','-o',OUT/'test-analyzer-asan'])
 run([OUT/'test-analyzer-asan'])
-run(['node','firmware/xiao_oled/tests/test_ui.cjs'])
+# Playwright is not vendored in this repo. Use PLAYWRIGHT_MODULE when the caller
+# has it, otherwise look in sibling checkouts before skipping the browser test.
+def playwright_env():
+    if os.environ.get('PLAYWRIGHT_MODULE'):
+        return os.environ
+    # Only a module whose pinned browser build is actually installed can run.
+    cache = Path.home() / '.cache/ms-playwright'
+    installed = {p.name for p in cache.glob('chromium*')} if cache.is_dir() else set()
+    for candidate in sorted(Path.home().glob('*/node_modules/playwright')):
+        # Playwright pins an exact browser build; resolve it from playwright-core's
+        # browsers.json so only a module with that build present is used.
+        try:
+            browsers = json.loads((candidate / 'node_modules/playwright-core/browsers.json').read_text())
+        except Exception:
+            browsers = json.loads((candidate.parent / 'playwright-core/browsers.json').read_text())
+        revisions = {f"{b['name'].replace('chromium-headless-shell','chromium_headless_shell')}-{b['revision']}"
+                     for b in browsers.get('browsers', []) if b.get('name', '').startswith('chromium')}
+        if revisions & installed:
+            return dict(os.environ, PLAYWRIGHT_MODULE=str(candidate))
+    return None
+browser_env = playwright_env()
+if browser_env is None:
+    log.append('SKIP browser test: no playwright module found (set PLAYWRIGHT_MODULE)')
+else:
+    run(['node','firmware/xiao_oled/tests/test_ui.cjs'], env=browser_env)
 run(['pio','run','-c','platformio-oled.ini','-e','xiao-oled'])
 # Resolve the interpreter actually used by pipx PlatformIO (not system Python).
 pio_path = shutil.which('pio')

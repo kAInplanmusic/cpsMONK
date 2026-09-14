@@ -18,8 +18,10 @@ constexpr int OLED_SDA = 5;  // D4
 constexpr int OLED_SCL = 6;  // D5
 constexpr int MIC_BCLK = 7;  // D8
 constexpr int MIC_WS = 8;    // D9
-constexpr int MIC_SD = 9;   // D10; INMP441 L/R tied to GND
-constexpr size_t RAW_CAPACITY = cps::SAMPLE_RATE * 65U;
+constexpr int MIC_SD = 9;    // D10; INMP441 L/R tied to GND
+// Warm-up + 20 s window + calibration, at 32 kHz PCM16, in PSRAM.
+constexpr size_t RAW_SECONDS = 26;
+constexpr size_t RAW_CAPACITY = cps::SAMPLE_RATE * RAW_SECONDS;
 static cps::ImpactAnalyzer* analyzer = nullptr;
 static int16_t* rawPcm = nullptr;
 static size_t rawCount = 0;
@@ -34,15 +36,31 @@ static WebServer server(80);
 static Adafruit_SSD1306 oled(128, 32, &Wire, -1);
 
 static bool active() {
-    return analyzer->state() == cps::State::Calibrating || analyzer->state() == cps::State::Recording;
+    const auto s = analyzer->state();
+    return s == cps::State::Calibrating || s == cps::State::WaitingForMotor ||
+           s == cps::State::Warmup || s == cps::State::Recording;
 }
+// Strokes are only taken while the measurement window runs; before that the run
+// is still waiting for the machine or warming up.
+static bool collecting() { return analyzer->state() == cps::State::Recording; }
 static const char* stateName(cps::State s) {
     switch (s) {
         case cps::State::Idle: return "idle";
         case cps::State::Calibrating: return "calibrating";
+        case cps::State::WaitingForMotor: return "waiting";
+        case cps::State::Warmup: return "warmup";
         case cps::State::Recording: return "recording";
         case cps::State::Complete: return "complete";
         default: return "failed";
+    }
+}
+static const char* levelName(cps::Level l) {
+    switch (l) {
+        case cps::Level::Silent: return "silent";
+        case cps::Level::TooQuiet: return "quiet";
+        case cps::Level::Good: return "good";
+        case cps::Level::Warning: return "high";
+        default: return "loud";
     }
 }
 static bool lock() {
@@ -54,7 +72,8 @@ static void unlock() { xSemaphoreGive(guard); }
 static void statusInto(JsonObject j) {
     const auto& r = analyzer->result();
     j["state"] = stateName(analyzer->state());
-    j["count"] = analyzer->count(); j["target"] = cps::TARGET; j["runId"] = captureEpoch;
+    j["count"] = analyzer->count(); j["target"] = analyzer->target();
+    j["seen"] = analyzer->seen(); j["runId"] = captureEpoch;
     j["cps"] = r.cps; j["shapeSimilarity"] = r.shapeSimilarity;
     j["periodCvPercent"] = r.periodCvPercent;
     j["amplitudeCvPercent"] = r.amplitudeCvPercent;
@@ -62,16 +81,26 @@ static void statusInto(JsonObject j) {
     j["noiseRms"] = r.noiseRms; j["threshold"] = r.threshold;
     j["rejected"] = r.rejected; j["timingWarning"] = r.timingWarning;
     j["clippingWarning"] = r.clippingWarning;
+    j["windowTruncated"] = r.windowTruncated;
+    j["provisionalCps"] = r.provisionalCps; j["windowSeconds"] = r.windowSeconds;
     j["error"] = analyzer->error();
     j["minCps"] = analyzer->config.minCps; j["maxCps"] = analyzer->config.maxCps;
     j["thresholdMultiplier"] = analyzer->config.thresholdMultiplier;
     j["thresholdFloor"] = analyzer->config.thresholdFloor;
+    j["level"] = levelName(analyzer->levelAssessment());
+    j["levelRms"] = r.levelRms; j["levelDb"] = r.levelDb;
+    j["levelReady"] = analyzer->levelWasGood();
+    j["gateOpen"] = analyzer->gateSatisfied();
+    j["autoStart"] = analyzer->config.autoStart;
+    j["cpsGate"] = cps::CPS_GATE;
+    j["warmupSeconds"] = cps::WARMUP_SECONDS;
     j["rawSamples"] = rawCount; j["sampleRate"] = cps::SAMPLE_RATE;
+    j["wavePoints"] = cps::WAVE_POINTS; j["windowDurationMs"] = cps::WINDOW_DURATION_MS;
     j["oledDetected"] = oledReady;
 }
 static void getStatus() {
     if (!lock()) return;
-    StaticJsonDocument<1536> d;
+    StaticJsonDocument<2048> d;
     statusInto(d.to<JsonObject>());
     String out; serializeJson(d, out);
     unlock();
@@ -82,6 +111,12 @@ static void beginMeasurement() {
     if (!lock()) return;
     if (!audioReady || active()) {
         unlock(); server.send(409, "application/json", "{\"error\":\"Audio nicht bereit oder Messung laeuft\"}"); return;
+    }
+    // The level indicator must have seen the target band at least once; a run
+    // started from a badly placed microphone cannot be interpreted afterwards.
+    if (!analyzer->levelWasGood()) {
+        unlock(); server.send(409, "application/json",
+            "{\"error\":\"Pegel war noch nicht im gruenen Bereich: Abstand/Winkel pruefen\"}"); return;
     }
     rawCount = 0; ++captureEpoch;
     analyzer->start();
@@ -99,13 +134,26 @@ static bool parseArg(const char* name, float& value, float lo, float hi) {
     if (!s.length() || end != s.c_str() + s.length() || !std::isfinite(v) || v < lo || v > hi) return false;
     value = v; return true;
 }
+static bool parseFlag(const char* name, bool& value) {
+    if (!server.hasArg(name)) return true;
+    const String s = server.arg(name);
+    if (s != "0" && s != "1") return false;
+    value = s == "1"; return true;
+}
 static void configure() {
     if (!lock()) return;
     if (active()) { unlock(); server.send(409, "application/json", "{\"error\":\"Erst Messung beenden\"}"); return; }
     auto c = analyzer->config;
-    bool ok = parseArg("minCps", c.minCps, 20, 199) && parseArg("maxCps", c.maxCps, 21, 200)
-        && parseArg("thresholdMultiplier", c.thresholdMultiplier, 3, 30)
-        && parseArg("thresholdFloor", c.thresholdFloor, 0.00001f, 0.5f) && c.minCps < c.maxCps;
+    // minCps floor of 50 is enforced here AND as an HTML attribute in the UI;
+    // changing one without the other re-opens a limit the firmware closed.
+    bool ok = parseArg("minCps", c.minCps, cps::CPS_GATE, 199) &&
+        parseArg("maxCps", c.maxCps, cps::CPS_GATE + 1, 220) &&
+        parseArg("thresholdMultiplier", c.thresholdMultiplier, 3, 30) &&
+        parseArg("thresholdFloor", c.thresholdFloor, 0.00001f, 0.5f) &&
+        parseArg("levelLow", c.levelLow, 0.0001f, 0.9f) &&
+        parseArg("levelHigh", c.levelHigh, 0.001f, 0.99f) &&
+        parseFlag("autoStart", c.autoStart) && c.minCps < c.maxCps &&
+        c.levelHigh > c.levelLow;
     if (ok) { analyzer->config = c; analyzer->reset(); rawCount = 0; ++captureEpoch; }
     unlock(); server.send(ok ? 200 : 400, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Ungueltige Messparameter\"}");
 }
@@ -115,7 +163,7 @@ static bool requireComplete() {
     if (!lock()) return false;
     bool ok = analyzer->state() == cps::State::Complete;
     unlock();
-    if (!ok) server.send(409, "application/json", "{\"error\":\"500 Impulse noch nicht vollstaendig\"}");
+    if (!ok) server.send(409, "application/json", "{\"error\":\"Messung noch nicht abgeschlossen\"}");
     return ok;
 }
 static void sendWaveforms(bool withStatus) {
@@ -123,13 +171,16 @@ static void sendWaveforms(bool withStatus) {
     server.sendHeader("Cache-Control", "no-store");
     if (withStatus) server.sendHeader("Content-Disposition", "attachment; filename=cpsmonk-result.json");
     server.setContentLength(CONTENT_LENGTH_UNKNOWN); server.send(200, "application/json", "");
+    const size_t count = analyzer->count();
     String first = "{\"sampleRate\":" + String(cps::SAMPLE_RATE) + ",\"wavePoints\":" + String(cps::WAVE_POINTS);
+    first += ",\"windowDurationMs\":" + String(cps::WINDOW_DURATION_MS, 2);
+    first += ",\"count\":" + String(count);
     if (withStatus) {
-        StaticJsonDocument<1536> d; statusInto(d.to<JsonObject>());
+        StaticJsonDocument<2048> d; statusInto(d.to<JsonObject>());
         String s; serializeJson(d, s); first += ",\"status\":" + s;
     }
-    first += ",\"windowDurationMs\":3.0,\"impacts\":["; server.sendContent(first);
-    for (size_t i = 0; i < analyzer->count(); ++i) {
+    first += ",\"impacts\":["; server.sendContent(first);
+    for (size_t i = 0; i < count; ++i) {
         if (!server.client().connected()) break;
         String row; row.reserve(2300);
         char indexText[32]; snprintf(indexText, sizeof(indexText), "%llu", (unsigned long long)analyzer->impactSample(i));
@@ -189,6 +240,7 @@ static void audioTask(void*) {
     for (;;) {
         xSemaphoreTake(guard, portMAX_DELAY);
         const uint32_t epochBeforeRead = captureEpoch;
+        const bool collect = collecting();
         xSemaphoreGive(guard);
         size_t bytes = 0;
         esp_err_t err = i2s_read(I2S_NUM_0, samples, sizeof(samples), &bytes, pdMS_TO_TICKS(500));
@@ -205,10 +257,17 @@ static void audioTask(void*) {
                 analyzer->fail("Audio-Datenverlust: Messung ungueltig, neu starten");
         }
         if (err == ESP_OK) {
-            for (size_t i = 0; i < bytes / sizeof(int32_t) && active(); ++i) {
-                if (rawCount >= RAW_CAPACITY) { analyzer->fail("Aufnahmespeicher voll"); break; }
-                rawPcm[rawCount++] = int16_t(samples[i] >> 16);
-                analyzer->process(float(samples[i]) / 2147483648.0f);
+            const size_t words = bytes / sizeof(int32_t);
+            for (size_t i = 0; i < words; ++i) {
+                const float value = float(samples[i]) / 2147483648.0f;
+                if (active()) {
+                    if (collect && rawCount < RAW_CAPACITY) rawPcm[rawCount++] = int16_t(samples[i] >> 16);
+                    analyzer->process(value);
+                } else {
+                    // Idle: only the level indicator consumes samples.
+                    analyzer->monitor(value);
+                    analyzer->levelTouch();
+                }
             }
         }
         xSemaphoreGive(guard);
@@ -231,22 +290,79 @@ static bool initAudio() {
     if (i2s_set_pin(I2S_NUM_0, &p) != ESP_OK) { i2s_driver_uninstall(I2S_NUM_0); return false; }
     return xTaskCreatePinnedToCore(audioTask, "cps-audio", 16384, nullptr, 3, nullptr, 1) == pdPASS;
 }
+// Level band as a horizontal bar: the operator sets the distance until the bar
+// sits inside the green middle region.
+static void drawLevelBar(int x, int y, int w, int h, float level, cps::Level band) {
+    oled.drawRect(x, y, w, h, SSD1306_WHITE);
+    int inner = int(level * w);
+    if (inner > w - 2) inner = w - 2;
+    if (inner > 0) oled.fillRect(x + 1, y + 1, inner, h - 2, SSD1306_WHITE);
+    if (band == cps::Level::Good) {
+        // Mark the target band region instead of drawing colour (panel is mono).
+        oled.drawRect(x, y - 2, w, h + 4, SSD1306_WHITE);
+    }
+}
 static void drawOled() {
     if (!oledReady || xSemaphoreTake(guard, pdMS_TO_TICKS(5)) != pdTRUE) return;
-    auto s = analyzer->state(); auto count = analyzer->count();
-    float cpsValue = analyzer->result().cps, sim = analyzer->result().shapeSimilarity;
+    const auto s = analyzer->state();
+    const auto count = analyzer->count();
+    const auto r = analyzer->result();
+    const auto band = analyzer->levelAssessment();
+    const bool levelReady = analyzer->levelWasGood();
     xSemaphoreGive(guard);
-    oled.clearDisplay(); oled.setTextColor(SSD1306_WHITE); oled.setTextSize(1); oled.setCursor(0, 0);
-    if (s == cps::State::Idle) {
-        if ((millis() / 5000) % 2) { oled.println("WLAN Passwort:"); oled.println(apPassword); oled.println("http://192.168.4.1"); }
-        else { oled.println(apName); oled.println("Motor AUS -> Start"); oled.println("WLAN/USB bereit"); }
-    } else if (s == cps::State::Calibrating) {
-        oled.println("Ruhe messen..."); oled.println("Motor AUS lassen!");
-    } else if (s == cps::State::Recording) {
-        oled.println("Motor AN / Aufnahme"); oled.setTextSize(2); oled.printf("%u/500", unsigned(count));
-    } else if (s == cps::State::Complete) {
-        oled.setTextSize(2); oled.printf("%.1f CPS", cpsValue); oled.setTextSize(1); oled.setCursor(0, 23); oled.printf("Form %.1f%%", sim);
-    } else { oled.println("Messfehler"); oled.println("Details im Browser"); oled.println("USB r = Reset"); }
+    oled.clearDisplay(); oled.setTextColor(SSD1306_WHITE);
+    switch (s) {
+        case cps::State::Idle: {
+            // Frame 1: level indicator; frame 2: WLAN credentials.
+            if ((millis() / 6000) % 2) {
+                oled.setTextSize(1); oled.setCursor(0, 0); oled.println("WLAN Passwort:");
+                oled.println(apPassword); oled.println("http://192.168.4.1");
+                break;
+            }
+            oled.setTextSize(1); oled.setCursor(0, 0);
+            oled.print("Pegel ");
+            if (band == cps::Level::Silent) oled.print("KEIN SIGNAL");
+            else if (band == cps::Level::TooQuiet) oled.print("zu leise");
+            else if (band == cps::Level::Good) oled.print("OK - Abstand passt");
+            else if (band == cps::Level::Warning) oled.print("grenzwertig");
+            else oled.print("zu laut");
+            drawLevelBar(0, 12, 127, 8, r.levelRms / 1.0f, band);
+            oled.setCursor(0, 24);
+            if (band == cps::Level::Silent) oled.print("Kabel/L-R pruefen");
+            else if (levelReady) oled.print("Start moeglich");
+            else oled.print("Abstand einstellen");
+            break;
+        }
+        case cps::State::Calibrating:
+            oled.setTextSize(1); oled.println("Ruhe messen..."); oled.println("Motor AUS lassen!");
+            break;
+        case cps::State::WaitingForMotor:
+            oled.setTextSize(1); oled.println("Auto-Start bereit"); oled.println("Motor jetzt AN");
+            oled.print("Impulse: "); oled.println(analyzer->seen());
+            break;
+        case cps::State::Warmup:
+            oled.setTextSize(1); oled.println("Vorlauf: Rate messen");
+            oled.setTextSize(2);
+            oled.printf("%.0f CPS", r.provisionalCps);
+            oled.setTextSize(1); oled.print("Impulse "); oled.println(analyzer->seen());
+            break;
+        case cps::State::Recording:
+            oled.setTextSize(1); oled.println("Messung laeuft");
+            oled.setTextSize(2); oled.printf("%u/%u", unsigned(count), unsigned(cps::TARGET));
+            oled.setTextSize(1);
+            oled.printf("%.1fs Fenster", r.windowSeconds);
+            break;
+        case cps::State::Complete:
+            oled.setTextSize(2); oled.printf("%.1f CPS", r.cps);
+            oled.setTextSize(1); oled.setCursor(0, 23);
+            oled.printf("Form %.1f%% n=%u", r.shapeSimilarity, unsigned(count));
+            break;
+        default:
+            oled.setTextSize(1); oled.println("Messfehler");
+            oled.println(analyzer->error());
+            oled.println("USB r = Reset");
+            break;
+    }
     oled.display();
 }
 static void fatal(const char* message) {
@@ -273,7 +389,9 @@ void setup() {
     snprintf(apPassword, sizeof(apPassword), "%08lx", (unsigned long)esp_random());
     if (!WiFi.softAP(apName, apPassword, 1, 0, 2)) fatal("WLAN Start fehlgeschlagen");
     Serial.printf("\ncpsMONK OLED: SSID %s | Passwort %s | http://192.168.4.1\n", apName, apPassword);
-    Serial.println("s=Start (1s Ruhe, danach Motor AN), r=Reset, ?=Status. Keine Kraftmessung.");
+    Serial.printf("Ziel %u Impulse, Fenster %u/%us, Auto-Start ab %.0f CPS.\n",
+        unsigned(cps::TARGET), unsigned(cps::TARGET), unsigned(cps::WINDOW_MAX_SECONDS), cps::CPS_GATE);
+    Serial.println("s=Start (Auto-Start ab 4 stabilen Impulsen), r=Reset, ?=Status. Keine Kraftmessung.");
     server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", WEB_UI); });
     server.on("/api/status", HTTP_GET, getStatus);
     server.on("/api/start", HTTP_POST, beginMeasurement);
@@ -295,7 +413,10 @@ void loop() {
         if (xSemaphoreTake(guard, pdMS_TO_TICKS(100)) == pdTRUE) {
             if (c == 's' && audioReady && !active()) { rawCount = 0; ++captureEpoch; analyzer->start(); }
             if (c == 'r') { analyzer->reset(); rawCount = 0; ++captureEpoch; }
-            if (c == '?') Serial.printf("state=%s impacts=%u cps=%.3f form=%.2f error=%s\n", stateName(analyzer->state()), unsigned(analyzer->count()), analyzer->result().cps, analyzer->result().shapeSimilarity, analyzer->error());
+            if (c == '?') Serial.printf("state=%s impacts=%u seen=%u cps=%.3f form=%.2f level=%s err=%s\n",
+                stateName(analyzer->state()), unsigned(analyzer->count()), unsigned(analyzer->seen()),
+                analyzer->result().cps, analyzer->result().shapeSimilarity,
+                levelName(analyzer->levelAssessment()), analyzer->error());
             unlock();
         }
     }

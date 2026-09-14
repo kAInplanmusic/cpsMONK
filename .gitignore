@@ -28,3 +28,9 @@ yarn-debug.log*
 yarn-error.log*
 .env
 .pio/
+
+# Local env backups (contain secrets, never commit)
+.env.bak*
+
+# Private board photos / scope traces used for analysis
+public/

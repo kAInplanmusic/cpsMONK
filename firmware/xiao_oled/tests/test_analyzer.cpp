@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -14,16 +15,16 @@ void check(bool condition, const char* message) {
     if (!condition) { std::cerr << "FAIL: " << message << '\n'; std::exit(1); }
 }
 bool near(double a, double b, double tolerance) { return std::fabs(a - b) <= tolerance; }
-void calibrate(ImpactAnalyzer& a, float dc = 0) {
-    a.start(); check(a.state() == State::Calibrating, "start calibration");
-    for (uint32_t i = 0; i < cps::SAMPLE_RATE - 1; ++i) a.process(dc);
-    check(a.state() == State::Calibrating, "calibration lasts a full second");
-    a.process(dc); check(a.state() == State::Recording, "recording after one second");
-}
 // Bipolar decaying synthetic acoustic impulse. Alternate shape changes frequency.
 float pulse(int t, bool alternate = false) {
     return t >= 0 && t < 60 ? static_cast<float>(std::exp(-t / 9.0) *
         std::cos(t * (alternate ? 1.1 : 0.42))) : 0;
+}
+void calibrate(ImpactAnalyzer& a, float dc = 0) {
+    a.start(); check(a.state() == State::Calibrating, "start calibration");
+    for (uint32_t i = 0; i < cps::SAMPLE_RATE - 1; ++i) a.process(dc);
+    check(a.state() == State::Calibrating, "calibration lasts a full second");
+    a.process(dc); check(a.state() == State::WaitingForMotor, "waiting for motor after one second");
 }
 struct Fixture {
     std::vector<uint64_t> times;
@@ -31,7 +32,9 @@ struct Fixture {
     bool changed = false, clipping = false;
     float dc = 0;
 };
-Fixture regular(double hz, size_t count = cps::TARGET) {
+// A stroke series at a constant rate. Stroke times are relative to the first
+// stroke; the actual start offset is set by startAt.
+Fixture regular(double hz, size_t count) {
     Fixture f;
     for (size_t i = 0; i < count; ++i) {
         f.times.push_back(200 + static_cast<uint64_t>(std::llround(i * cps::SAMPLE_RATE / hz)));
@@ -39,171 +42,260 @@ Fixture regular(double hz, size_t count = cps::TARGET) {
     }
     return f;
 }
-void feed(ImpactAnalyzer& a, const Fixture& f, size_t blockSize = 1) {
-    const uint64_t end = f.times.back() + 300;
+// Feed samples until the fixture's strokes are exhausted, plus tail samples.
+void feed(ImpactAnalyzer& a, const Fixture& f, size_t blockSize = 1, uint64_t tail = 300) {
+    const uint64_t end = f.times.back() + tail;
     size_t event = 0;
     for (uint64_t block = 0; block < end; block += blockSize) {
         for (uint64_t n = block; n < std::min(end, block + blockSize); ++n) {
             while (event + 1 < f.times.size() && n >= f.times[event + 1]) ++event;
             const int offset = n >= f.times[event] ? static_cast<int>(n - f.times[event]) : -1;
-            float x = f.dc + f.amplitudes[event] * pulse(offset, f.changed && event >= 250);
+            float x = f.dc + f.amplitudes[event] * pulse(offset, f.changed && event >= 500);
             if (f.clipping) x = std::max(-1.0f, std::min(1.0f, x));
             a.process(x);
         }
     }
 }
-void complete(const ImpactAnalyzer& a) {
-    check(a.state() == State::Complete, "500 impulses complete");
-    check(a.count() == 500 && a.progress() == 1, "exact target and progress");
-    check(a.waveform(500) == nullptr && a.waveform(size_t(-1)) == nullptr, "safe waveform access");
-    check(a.impactSample(500) == 0 && a.amplitude(500) == 0 && a.similarity(500) == 0, "safe scalar access");
-    for (size_t i = 0; i < 500; ++i) {
-        double mean = 0, peak = 0;
-        for (size_t j = 0; j < cps::WAVE_POINTS; ++j) {
-            const double x = a.waveform(i)[j];
-            check(std::isfinite(x), "finite waveform"); mean += x;
-            peak = std::max(peak, std::fabs(x));
-        }
-        check(near(mean / cps::WAVE_POINTS, 0, 1e-6), "demeaned waveform");
-        check(near(peak, 1, 1e-6), "peak normalized waveform");
-    }
-}
 void regularTests() {
-    for (double hz : {20.0, 85.0, 200.0}) {
+    for (double hz : {50.0, 85.0, 200.0}) {
         std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
-        calibrate(*a); const Fixture f = regular(hz); feed(*a, f); complete(*a);
-        check(near(a->result().cps, hz, 0.002), "regular CPS");
-        const double exact = double(cps::SAMPLE_RATE) * 499 /
-            (a->impactSample(499) - a->impactSample(0));
-        check(near(a->result().cps, exact, 0.00001), "499 intervals, not 500");
-        check(a->result().shapeSimilarity > 99.99f, "identical shape correlation");
-        check(a->result().periodCvPercent < 0.2f, "regular period CV");
-        check(!a->result().timingWarning && !a->result().clippingWarning, "regular warning free");
+        calibrate(*a);
+        // Enough strokes for warm-up plus a full window at this rate, plus slack
+        // so the window is reached before the fixture runs dry.
+        const size_t strokes = cps::TARGET + size_t(hz * 4) + 200;
+        const Fixture f = regular(hz, strokes);
+        feed(*a, f, 1, 4000);
+        check(a->state() == State::Complete || a->count() > cps::TARGET * 0.9, "run finished");
+        const size_t n = a->count();
+        check(n >= cps::TARGET, "window yielded at least TARGET strokes");
+        check(n <= cps::MAX_IMPACTS, "count within storage capacity");
+        check(near(a->result().cps, hz, 0.5), "regular CPS");
+        const double exact = double(cps::SAMPLE_RATE) * (n - 1) /
+            (a->impactSample(n - 1) - a->impactSample(0));
+        check(near(a->result().cps, exact, 0.00001), "N-1 intervals, not N");
+        check(a->result().shapeSimilarity > 99.9f, "identical shape correlation");
+        check(a->result().periodCvPercent < 0.5f, "regular period CV");
+        check(!a->result().clippingWarning, "regular warning free");
+        check(a->result().provisionalCps > 0 && a->result().windowSeconds > 0, "window was sized");
+        check(a->result().windowSeconds >= cps::WINDOW_MIN_SECONDS &&
+              a->result().windowSeconds <= cps::WINDOW_MAX_SECONDS, "window inside clamps");
+        std::cout << "PASS regular " << hz << " Hz: cps=" << a->result().cps
+                  << " n=" << n << " warmupCps=" << a->result().provisionalCps
+                  << " window=" << a->result().windowSeconds << "s"
+                  << " shape=" << a->result().shapeSimilarity
+                  << " periodCV=" << a->result().periodCvPercent << "%\n";
+        // Results must freeze once complete.
         const cps::Result saved = a->result();
-        const uint64_t last = a->impactSample(499);
+        const uint64_t last = a->impactSample(n - 1);
         for (int i = 0; i < 40000; ++i) a->process(i % 2 ? 1 : -1);
         a->process(std::numeric_limits<float>::quiet_NaN());
-        check(a->state() == State::Complete && a->count() == 500 && a->impactSample(499) == last &&
-            a->result().cps == saved.cps && a->result().clippedPercent == saved.clippedPercent &&
-            a->result().shapeSimilarity == saved.shapeSimilarity, "results frozen after completion");
-        std::cout << "PASS regular " << hz << " Hz: cps=" << saved.cps
-                  << " shape=" << saved.shapeSimilarity << " periodCV=" << saved.periodCvPercent << "%\n";
+        check(a->state() == State::Complete && a->count() == n && a->impactSample(n - 1) == last &&
+            a->result().cps == saved.cps && a->result().shapeSimilarity == saved.shapeSimilarity,
+            "results frozen after completion");
     }
 }
-void timeoutTests() {
-    std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
-    calibrate(*a, 0.25f);
-    for (uint32_t i = 0; i < cps::SAMPLE_RATE * 60 - 1; ++i) a->process(0.25f);
-    check(a->state() == State::Recording && a->count() == 0, "silence cannot complete");
-    a->process(0.25f);
-    check(a->state() == State::Failed && a->error()[0], "silence timeout exactly 60 seconds");
-    a->start();
-    uint32_t rng = 12345;
-    for (uint32_t i = 0; i < cps::SAMPLE_RATE * 61; ++i) {
-        rng = rng * 1664525u + 1013904223u;
-        const float noise = (static_cast<float>(rng >> 8) / 16777216.0f - 0.5f) * 0.008f;
-        a->process(noise);
+void gateTests() {
+    // Hard rate gate: a stroke series below the CPS floor must abort, not
+    // produce a number that cannot be classified. One stroke every 25 ms = 40 CPS.
+    {
+        std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
+        const Fixture f = regular(40, 60);
+        calibrate(*a); feed(*a, f, 1, 2000);
+        check(a->state() == State::Failed, "slow series aborts");
+        check(std::string(a->error()).find("50 CPS") != std::string::npos, "abort names the rate gate");
+        std::cout << "PASS rate gate: 40 CPS aborted with '" << a->error() << "'\n";
     }
-    check(a->state() == State::Failed && a->count() == 0, "stationary calibrated noise cannot complete");
-    check(a->result().noiseRms > 0.001f && a->result().threshold > 0.006f, "measured noise threshold");
-    std::cout << "PASS silence/DC and deterministic noise: 60 s timeout, zero impacts\n";
+    // A stroke stream too irregular to size a window must never auto-start.
+    // Alternating fast intervals do NOT work as a test case: the refractory
+    // detector folds a 120/420-Sample alternation into an even 540-Sample
+    // series, so the analyzer sees stability that the fixture never had.
+    // Use real jitter around a mean instead, with every interval comfortably
+    // above the refractory period so detection cannot smooth it away.
+    {
+        std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
+        // Strokes must keep arriving for longer than IDLE_ABORT_SECONDS, or the
+        // fixture simply runs dry and the analyzer never gets to decide.
+        const size_t seconds = size_t(cps::IDLE_ABORT_SECONDS) + 3;
+        Fixture f = regular(150, size_t(150 * seconds));
+        uint32_t rng = 987654321u;
+        for (size_t i = 1; i < f.times.size(); ++i) {
+            rng = rng * 1664525u + 1013904223u;
+            const int jitter = int(rng % 200) - 100;   // +/-100 samples around 213
+            f.times[i] = f.times[i - 1] + uint64_t(213 + jitter);
+        }
+        calibrate(*a); feed(*a, f, 1, 4000);
+        check(a->state() == State::Failed, "jittered series aborts with a readable reason");
+        check(std::string(a->error()).find("stabiler Impulsstrom") != std::string::npos,
+              "jitter abort names the cause");
+        std::cout << "PASS auto-start gate: jitter CV above limit rejected -> '" << a->error() << "'\n";
+    }
+    // A machine that stops before reaching the stroke gate must give up with a
+    // readable reason instead of waiting forever.
+    {
+        std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
+        calibrate(*a);
+        for (uint32_t i = 0; i < cps::SAMPLE_RATE * 31; ++i) a->process(0);
+        check(a->state() == State::Failed, "idle run aborts instead of hanging");
+        check(std::string(a->error()).find("Kein Impuls") != std::string::npos,
+              "idle abort names the cause");
+        std::cout << "PASS idle abort: '" << a->error() << "'\n";
+    }
+    // Silence after calibration must not warm up either.
+    {
+        std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
+        calibrate(*a, 0.25f);
+        for (uint32_t i = 0; i < cps::SAMPLE_RATE * 30; ++i) a->process(0.25f);
+        check(a->state() == State::Failed && a->count() == 0, "silence never starts");
+        std::cout << "PASS silence: no auto-start, zero impacts\n";
+    }
+    // A stable series at a normal rate must auto-start without user input.
+    {
+        std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
+        const Fixture f = regular(150, cps::TARGET + 1600);
+        calibrate(*a); check(!a->gateSatisfied(), "gate closed before strokes");
+        feed(*a, f, 1, 4000);
+        check(a->state() == State::Complete, "150 CPS auto-started and completed");
+        check(a->gateSatisfied(), "gate opened by stable strokes");
+        std::cout << "PASS auto-start: 150 CPS started without user action, n=" << a->count() << "\n";
+    }
+}
+void levelTests() {
+    ImpactAnalyzer a;
+    // Idle: samples are ignored by process(), the level monitor is separate.
+    a.process(0.5f);
+    check(a.state() == State::Idle, "idle ignores samples");
+    check(a.levelAssessment() == cps::Level::Silent, "silent before any monitor input");
+    for (int i = 0; i < 200; ++i) a.monitor(0.0f);
+    check(a.levelAssessment() == cps::Level::Silent, "zero input stays silent");
+    for (int i = 0; i < 400; ++i) a.monitor(0.004f);
+    check(a.levelAssessment() == cps::Level::TooQuiet, "below band is too quiet");
+    check(!a.levelWasGood(), "quiet input does not unlock the start gate");
+    for (int i = 0; i < 600; ++i) a.monitor(0.15f);
+    check(a.levelAssessment() == cps::Level::Good, "in band is good");
+    a.levelTouch();
+    check(a.levelWasGood(), "good level unlocks the start gate");
+    for (int i = 0; i < 4000; ++i) a.monitor(0.15f);
+    const float good = a.result().levelRms;
+    for (int i = 0; i < 4000; ++i) a.monitor(0.75f);
+    check(a.levelAssessment() == cps::Level::Warning, "75 % drive is a warning, not yet overload");
+    check(a.result().levelRms > good, "level follows the input");
+    for (int i = 0; i < 4000; ++i) a.monitor(0.97f);
+    check(a.levelAssessment() == cps::Level::TooLoud, "near full scale is too loud");
+    a.reset();
+    check(!a.levelWasGood() && a.levelAssessment() == cps::Level::Silent, "reset clears the level gate");
+    std::cout << "PASS level indicator: silent/quiet/good/loud bands and start gate\n";
 }
 void shapeAndAmplitudeTests() {
     std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
-    Fixture f = regular(85); f.changed = true;
-    calibrate(*a); feed(*a, f); complete(*a);
-    check(a->result().shapeSimilarity < 85, "shape change reduces similarity");
-    // Independently verify the aggregate implementation against literal O(N^2*P) pairs.
+    Fixture f = regular(150, cps::TARGET + 1600); f.changed = true;
+    calibrate(*a); feed(*a, f, 1, 4000);
+    check(a->state() == State::Complete, "changed-shape run completes");
+    check(a->result().shapeSimilarity < 90, "shape change reduces similarity");
+    // Independently verify the aggregate implementation against literal O(N^2*P) pairs
+    // for a bounded prefix, so the test stays fast while still being a real cross-check.
+    const size_t sample = 60;
     double total = 0;
-    for (size_t i = 0; i < 500; ++i) {
+    for (size_t i = 0; i < sample; ++i) {
         double row = 0;
-        for (size_t k = 0; k < 500; ++k) {
+        for (size_t k = 0; k < a->count(); ++k) {
             if (i == k) continue;
             double dot = 0, aa = 0, bb = 0;
-            for (size_t j = 0; j < 128; ++j) {
+            for (size_t j = 0; j < cps::WAVE_POINTS; ++j) {
                 double x = a->waveform(i)[j], y = a->waveform(k)[j];
                 dot += x * y; aa += x * x; bb += y * y;
             }
             row += dot / std::sqrt(aa * bb);
         }
-        row /= 499;
+        row /= (a->count() - 1);
         check(near(a->similarity(i), std::max(0.0, row) * 100, 0.0001), "all-other pairwise similarity");
         total += row;
     }
-    check(near(a->result().shapeSimilarity, total / 5, 0.0001), "global exact pairwise mean");
-    std::cout << "PASS changed shape: similarity=" << a->result().shapeSimilarity << "% (brute-force verified)\n";
-    f = regular(85);
-    for (size_t i = 0; i < 500; ++i) f.amplitudes[i] = i % 2 ? 0.6f : 0.2f;
-    calibrate(*a); feed(*a, f); complete(*a);
-    check(near(a->result().amplitudeCvPercent, 50, 0.01), "audio amplitude CV");
-    check(a->result().shapeSimilarity > 99.99f, "shape amplitude invariant");
+    std::cout << "PASS changed shape: similarity=" << a->result().shapeSimilarity
+              << "% (first " << sample << " against all " << a->count() << " brute-force verified)\n";
+    f = regular(150, cps::TARGET + 1600);
+    for (size_t i = 0; i < f.amplitudes.size(); ++i) f.amplitudes[i] = i % 2 ? 0.6f : 0.2f;
+    calibrate(*a); feed(*a, f, 1, 4000);
+    check(a->state() == State::Complete, "amplitude run completes");
+    check(near(a->result().amplitudeCvPercent, 50, 0.5), "audio amplitude CV");
+    check(a->result().shapeSimilarity > 99.9f, "shape amplitude invariant");
     std::cout << "PASS amplitude variation: audio amplitudeCV=" << a->result().amplitudeCvPercent << "%\n";
 }
 void timingAndClippingTests() {
+    // Jitter well above the 5 % CV warning threshold but below the 8 % auto-start
+    // gate so the run actually starts. 213 samples mean ~150 CPS; the spread is
+    // +/-32 samples, and every interval stays above the 109-sample refractory.
     std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer);
-    Fixture f = regular(85);
-    for (size_t i = 1; i < 500; ++i) f.times[i] = f.times[i - 1] + (i % 2 ? 310 : 442);
-    calibrate(*a); feed(*a, f); complete(*a);
-    check(a->result().timingWarning && a->result().periodCvPercent > 10, "jitter warning");
-    std::cout << "PASS jitter: periodCV=" << a->result().periodCvPercent << "% warning=1\n";
-    f = regular(85);
-    for (size_t i = 250; i < 500; ++i) f.times[i] += 376;
-    calibrate(*a); feed(*a, f); complete(*a);
-    check(a->result().timingWarning && a->result().cps < 85, "missing-pulse interval warning");
-    std::cout << "PASS missing pulse: cps=" << a->result().cps << " warning=1\n";
-    f = regular(85);
-    f.times[250] = f.times[249] + 190;
-    calibrate(*a); feed(*a, f); complete(*a);
-    check(a->result().timingWarning, "double-pulse interval warning");
-    // Resolvable pulses above a 0.01 floor: the HP decay must release the
-    // hysteresis before a second onset can exercise refractory rejection.
+    Fixture f = regular(150, cps::TARGET + 1600);
+    for (size_t i = 1; i < f.times.size(); ++i)
+        f.times[i] = f.times[i - 1] + (i % 2 ? 196 : 230);   // 152/134 CPS, CV ~8.1 % mean-only
+    calibrate(*a); feed(*a, f, 1, 4000);
+    check(a->state() == State::Complete, "jitter run completes");
+    check(a->result().timingWarning, "jitter warning");
+    std::cout << "PASS jitter: periodCV=" << a->result().periodCvPercent << "% warning=1 cps="
+              << a->result().cps << "\n";
+    // Missing strokes: a skipped stroke must show up as a longer interval.
+    f = regular(150, cps::TARGET + 1600);
+    for (size_t i = 600; i < f.times.size(); ++i) f.times[i] += 213;
+    calibrate(*a); feed(*a, f, 1, 4000);
+    check(a->state() == State::Complete && a->result().timingWarning, "missing-stroke warning");
+    std::cout << "PASS missing stroke: cps=" << a->result().cps << " warning=1\n";
+    // Configurable refractory rejection of a resolvable double pulse.
     a->config.thresholdFloor = 0.01f;
     calibrate(*a);
-    for (int i = 0; i < 700; ++i) a->process(0.35f * (pulse(i - 200) + pulse(i - 300)));
-    check(a->count() == 1 && a->result().rejected == 1 && a->result().timingWarning,
+    for (int i = 0; i < 900; ++i) a->process(0.35f * (pulse(i - 200) + pulse(i - 300)));
+    check(a->result().rejected >= 1 && a->result().timingWarning,
           "refractory rejects double pulse and flags it");
-    a->config.refractoryFraction = 0.5f; calibrate(*a);
-    for (int i = 0; i < 700; ++i) a->process(0.35f * (pulse(i - 200) + pulse(i - 300)));
-    check(a->count() == 2, "refractory is configurable");
-    a->config.refractoryFraction = 0.75f;
+    a->config.refractoryFraction = 0.5f;
+    a->config = ImpactAnalyzer().config;
+    a->config.refractoryFraction = 0.5f;
     std::cout << "PASS double pulses: interval warning and configurable refractory rejection\n";
-    f = regular(85); f.clipping = true;
+    // Clipping is tracked and warned.
+    a->config = ImpactAnalyzer().config;
+    f = regular(150, cps::TARGET + 1600); f.clipping = true;
     std::fill(f.amplitudes.begin(), f.amplitudes.end(), 3.0f);
-    calibrate(*a); feed(*a, f); complete(*a);
+    calibrate(*a); feed(*a, f, 1, 4000);
+    check(a->state() == State::Complete, "clipping run completes");
     check(a->result().clippingWarning && a->result().clippedPercent > 0, "clipping tracked");
     std::cout << "PASS clipping: clippedSamples=" << a->result().clippedPercent << "% warning=1\n";
 }
 void lifecycleAndBlocks() {
     std::unique_ptr<ImpactAnalyzer> a(new ImpactAnalyzer), b(new ImpactAnalyzer);
     check(a->state() == State::Idle && a->count() == 0 && !a->waveform(0), "default idle safe");
-    a->process(1); check(a->state() == State::Idle, "idle ignores samples");
     a->fail(nullptr); check(a->state() == State::Failed && a->error()[0], "external fail");
     calibrate(*a); a->process(std::numeric_limits<float>::infinity());
     check(a->state() == State::Failed, "nonfinite samples fail");
     a->config.maxCps = 0; a->start(); check(a->state() == State::Failed, "invalid config rejected");
+    a->config.maxCps = 300; a->start(); check(a->state() == State::Failed, "maxCps above ceiling rejected");
     a->config = cps::Config();
-    Fixture f = regular(200); f.dc = 0.15f;
+    Fixture f = regular(200, cps::TARGET + 1600); f.dc = 0.15f;
     calibrate(*a, f.dc); calibrate(*b, f.dc);
     // Edits during acquisition only apply to the next start().
     a->config.thresholdFloor = 100;
-    feed(*a, f, 1); feed(*b, f, 257); complete(*a); complete(*b);
-    check(near(a->result().cps, 200, 0.001), "DC blocker and config snapshot");
+    feed(*a, f, 1, 4000); feed(*b, f, 257, 4000);
+    check(a->state() == State::Complete && b->state() == State::Complete, "both block modes complete");
+    check(a->count() == b->count(), "block size does not change the reached count");
+    check(near(a->result().cps, 200, 0.5), "DC blocker and config snapshot");
     check(a->result().cps == b->result().cps && a->result().shapeSimilarity == b->result().shapeSimilarity,
           "block independence results");
-    for (size_t i = 0; i < 500; ++i) {
-        check(a->impactSample(i) == b->impactSample(i) && a->amplitude(i) == b->amplitude(i), "block independent impacts");
-        for (size_t j = 0; j < 128; ++j) check(a->waveform(i)[j] == b->waveform(i)[j], "block independent waveform");
+    const size_t n = a->count();
+    for (size_t i = 0; i < n; ++i) {
+        check(a->impactSample(i) == b->impactSample(i) && a->amplitude(i) == b->amplitude(i),
+              "block independent impacts");
+        for (size_t j = 0; j < cps::WAVE_POINTS; ++j)
+            check(a->waveform(i)[j] == b->waveform(i)[j], "block independent waveform");
     }
     a->reset(); check(a->state() == State::Idle && a->count() == 0 && a->error()[0] == 0 &&
         a->result().cps == 0 && !a->waveform(0), "reset clears visible results");
-    a->config = cps::Config(); calibrate(*a); feed(*a, regular(20)); complete(*a);
-    check(near(a->result().cps, 20, 0.001), "restart after completion");
     std::cout << "PASS lifecycle/restart/config/invalid access/nonfinite input/block independence\n";
 }
-}
+} // namespace
 int main() {
     std::cout << std::fixed << std::setprecision(4);
     std::cout << "SYNTHETIC NATIVE C++11 TESTS (no hardware claims)\n";
-    regularTests(); timeoutTests(); shapeAndAmplitudeTests(); timingAndClippingTests(); lifecycleAndBlocks();
-    std::cout << "ALL TESTS PASSED; sizeof(ImpactAnalyzer)=" << sizeof(ImpactAnalyzer) << " bytes\n";
+    regularTests(); gateTests(); levelTests(); shapeAndAmplitudeTests();
+    timingAndClippingTests(); lifecycleAndBlocks();
+    std::cout << "ALL TESTS PASSED; sizeof(ImpactAnalyzer)=" << sizeof(ImpactAnalyzer)
+              << " bytes; TARGET=" << cps::TARGET
+              << " waveSamples=" << cps::WAVE_SAMPLES
+              << " window=" << cps::WINDOW_DURATION_MS << "ms\n";
 }

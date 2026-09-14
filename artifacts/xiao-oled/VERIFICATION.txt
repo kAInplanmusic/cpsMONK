@@ -1,42 +1,52 @@
 $ /usr/bin/python3 firmware/xiao_oled/web/generate_header.py
-Generated /home/patrick/cpsMONK/firmware/xiao_oled/web_ui.h (24938 bytes), HTML round-trip exact
+Generated /home/patrick/cpsMONK/firmware/xiao_oled/web_ui.h (29457 bytes), HTML round-trip exact
 
 $ g++ -std=c++11 -Wall -Wextra -Werror -O2 firmware/xiao_oled/tests/test_analyzer.cpp -o /home/patrick/cpsMONK/artifacts/xiao-oled/test-analyzer
 
 $ /home/patrick/cpsMONK/artifacts/xiao-oled/test-analyzer
 SYNTHETIC NATIVE C++11 TESTS (no hardware claims)
-PASS regular 20.0000 Hz: cps=20.0000 shape=100.0000 periodCV=0.0000%
-PASS regular 85.0000 Hz: cps=84.9999 shape=100.0000 periodCV=0.1326%
-PASS regular 200.0000 Hz: cps=200.0000 shape=100.0000 periodCV=0.0000%
-PASS silence/DC and deterministic noise: 60 s timeout, zero impacts
-PASS changed shape: similarity=61.0079% (brute-force verified)
-PASS amplitude variation: audio amplitudeCV=50.0010%
-PASS jitter: periodCV=17.5593% warning=1
-PASS missing pulse: cps=84.8301 warning=1
+PASS regular 50.0000 Hz: cps=50.0000 n=1000 warmupCps=50.0000 window=20.0000s shape=100.0000 periodCV=0.0000%
+PASS regular 85.0000 Hz: cps=85.0000 n=1000 warmupCps=85.0012 window=12.3528s shape=100.0000 periodCV=0.1326%
+PASS regular 200.0000 Hz: cps=200.0000 n=1000 warmupCps=200.0000 window=5.2500s shape=100.0000 periodCV=0.0000%
+PASS rate gate: 40 CPS aborted with 'Impulsrate unter 50 CPS: Messung abgebrochen'
+PASS auto-start gate: jitter CV above limit rejected -> 'Kein stabiler Impulsstrom: Abstand/Winkel oder Schwellwert pruefen'
+PASS idle abort: 'Kein Impuls erkannt: Motor aus oder Pegel zu niedrig'
+PASS silence: no auto-start, zero impacts
+PASS auto-start: 150 CPS started without user action, n=1000
+PASS level indicator: silent/quiet/good/loud bands and start gate
+PASS changed shape: similarity=57.5137% (first 60 against all 1000 brute-force verified)
+PASS amplitude variation: audio amplitudeCV=50.0273%
+PASS jitter: periodCV=7.9819% warning=1 cps=150.2467
+PASS missing stroke: cps=149.8502 warning=1
 PASS double pulses: interval warning and configurable refractory rejection
-PASS clipping: clippedSamples=1.5948% warning=1
+PASS clipping: clippedSamples=2.8125% warning=1
 PASS lifecycle/restart/config/invalid access/nonfinite input/block independence
-ALL TESTS PASSED; sizeof(ImpactAnalyzer)=265304 bytes
+ALL TESTS PASSED; sizeof(ImpactAnalyzer)=743664 bytes; TARGET=1000 waveSamples=193 window=6.0000ms
 
 $ g++ -std=c++11 -O1 -g -fsanitize=address,undefined firmware/xiao_oled/tests/test_analyzer.cpp -o /home/patrick/cpsMONK/artifacts/xiao-oled/test-analyzer-asan
 
 $ /home/patrick/cpsMONK/artifacts/xiao-oled/test-analyzer-asan
 SYNTHETIC NATIVE C++11 TESTS (no hardware claims)
-PASS regular 20.0000 Hz: cps=20.0000 shape=100.0000 periodCV=0.0000%
-PASS regular 85.0000 Hz: cps=84.9999 shape=100.0000 periodCV=0.1326%
-PASS regular 200.0000 Hz: cps=200.0000 shape=100.0000 periodCV=0.0000%
-PASS silence/DC and deterministic noise: 60 s timeout, zero impacts
-PASS changed shape: similarity=61.0079% (brute-force verified)
-PASS amplitude variation: audio amplitudeCV=50.0010%
-PASS jitter: periodCV=17.5593% warning=1
-PASS missing pulse: cps=84.8301 warning=1
+PASS regular 50.0000 Hz: cps=50.0000 n=1000 warmupCps=50.0000 window=20.0000s shape=100.0000 periodCV=0.0000%
+PASS regular 85.0000 Hz: cps=85.0000 n=1000 warmupCps=85.0012 window=12.3528s shape=100.0000 periodCV=0.1326%
+PASS regular 200.0000 Hz: cps=200.0000 n=1000 warmupCps=200.0000 window=5.2500s shape=100.0000 periodCV=0.0000%
+PASS rate gate: 40 CPS aborted with 'Impulsrate unter 50 CPS: Messung abgebrochen'
+PASS auto-start gate: jitter CV above limit rejected -> 'Kein stabiler Impulsstrom: Abstand/Winkel oder Schwellwert pruefen'
+PASS idle abort: 'Kein Impuls erkannt: Motor aus oder Pegel zu niedrig'
+PASS silence: no auto-start, zero impacts
+PASS auto-start: 150 CPS started without user action, n=1000
+PASS level indicator: silent/quiet/good/loud bands and start gate
+PASS changed shape: similarity=57.5137% (first 60 against all 1000 brute-force verified)
+PASS amplitude variation: audio amplitudeCV=50.0273%
+PASS jitter: periodCV=7.9819% warning=1 cps=150.2467
+PASS missing stroke: cps=149.8502 warning=1
 PASS double pulses: interval warning and configurable refractory rejection
-PASS clipping: clippedSamples=1.5948% warning=1
+PASS clipping: clippedSamples=2.8125% warning=1
 PASS lifecycle/restart/config/invalid access/nonfinite input/block independence
-ALL TESTS PASSED; sizeof(ImpactAnalyzer)=265304 bytes
+ALL TESTS PASSED; sizeof(ImpactAnalyzer)=743664 bytes; TARGET=1000 waveSamples=193 window=6.0000ms
 
 $ node firmware/xiao_oled/tests/test_ui.cjs
-PASS browser: idle/calibration/recording/complete/reset/new-run/offline/recovery, 500-wave overlay selection, WAV link, mobile layout, no JS errors. SYNTHETIC API only.
+PASS browser: level gate, idle/calibration/waiting/warmup/recording/complete/reset/failed, 1000-wave overlay selection, count-based validation, WAV link, mobile layout, no JS errors. SYNTHETIC API only.
 
 $ pio run -c platformio-oled.ini -e xiao-oled
 Processing xiao-oled (platform: espressif32@7.1.1; board: seeed_xiao_esp32s3; framework: arduino)
@@ -68,27 +78,27 @@ Retrieving maximum program size .pio/build/xiao-oled/firmware.elf
 Checking size .pio/build/xiao-oled/firmware.elf
 Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
 RAM:   [=         ]  13.8% (used 45148 bytes from 327680 bytes)
-Flash: [==        ]  24.2% (used 809081 bytes from 3342336 bytes)
-========================= [SUCCESS] Took 4.51 seconds =========================
+Flash: [==        ]  24.5% (used 818893 bytes from 3342336 bytes)
+========================= [SUCCESS] Took 4.62 seconds =========================
 
 $ /home/patrick/.local/share/pipx/venvs/platformio/bin/python /home/patrick/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 merge_bin -o /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin 0x0 /home/patrick/cpsMONK/artifacts/xiao-oled/bootloader.bin 0x8000 /home/patrick/cpsMONK/artifacts/xiao-oled/partitions.bin 0xe000 /home/patrick/cpsMONK/artifacts/xiao-oled/boot_app0.bin 0x10000 /home/patrick/cpsMONK/artifacts/xiao-oled/firmware.bin
 esptool.py v4.11.0
-Wrote 0xd59e0 bytes to file /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin, ready to flash to offset 0x0
+Wrote 0xd8040 bytes to file /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin, ready to flash to offset 0x0
 
 $ /home/patrick/.local/share/pipx/venvs/platformio/bin/python /home/patrick/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 image_info /home/patrick/cpsMONK/artifacts/xiao-oled/firmware.bin
 esptool.py v4.11.0
-File size: 809440 (bytes)
+File size: 819264 (bytes)
 Image version: 1
 Entry point: 4037707c
 5 segments
 
-Segment 1: len 0x23ce8 load 0x3c090020 file_offs 0x00000018 [DROM]
-Segment 2: len 0x0563c load 0x3fc94db0 file_offs 0x00023d08 [BYTE_ACCESSIBLE,MEM_INTERNAL,DRAM]
-Segment 3: len 0x06cc4 load 0x40374000 file_offs 0x0002934c [MEM_INTERNAL,IRAM]
-Segment 4: len 0x8b8a8 load 0x42000020 file_offs 0x00030018 [IROM]
-Segment 5: len 0x0a0ec load 0x4037acc4 file_offs 0x000bb8c8 [MEM_INTERNAL,IRAM]
-Checksum: 0f (valid)
-Validation Hash: fd7a0c64fc5dc7ad9ba2c29a8adbfc2c043bc00642d0ab0ed682ac498aef7c2d (valid)
+Segment 1: len 0x251bc load 0x3c090020 file_offs 0x00000018 [DROM]
+Segment 2: len 0x0563c load 0x3fc94db0 file_offs 0x000251dc [BYTE_ACCESSIBLE,MEM_INTERNAL,DRAM]
+Segment 3: len 0x057f0 load 0x40374000 file_offs 0x0002a820 [MEM_INTERNAL,IRAM]
+Segment 4: len 0x8ca28 load 0x42000020 file_offs 0x00030018 [IROM]
+Segment 5: len 0x0b5c0 load 0x403797f0 file_offs 0x000bca48 [MEM_INTERNAL,IRAM]
+Checksum: 34 (valid)
+Validation Hash: 4f6667b3bc78d6631f0d175dea9ee9310086cd900c6268a96f1631d2119cb641 (valid)
 
 PASS merged image: all four images match byte-for-byte at verified offsets.
 NO HARDWARE FLASH OR PHYSICAL VALIDATION PERFORMED.
