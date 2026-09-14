@@ -78,27 +78,27 @@ Retrieving maximum program size .pio/build/xiao-oled/firmware.elf
 Checking size .pio/build/xiao-oled/firmware.elf
 Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
 RAM:   [=         ]  13.8% (used 45148 bytes from 327680 bytes)
-Flash: [==        ]  24.5% (used 819941 bytes from 3342336 bytes)
-========================= [SUCCESS] Took 4.64 seconds =========================
+Flash: [==        ]  24.5% (used 820293 bytes from 3342336 bytes)
+========================= [SUCCESS] Took 5.39 seconds =========================
 
 $ /home/patrick/.local/share/pipx/venvs/platformio/bin/python /home/patrick/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 merge_bin -o /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin 0x0 /home/patrick/cpsMONK/artifacts/xiao-oled/bootloader.bin 0x8000 /home/patrick/cpsMONK/artifacts/xiao-oled/partitions.bin 0xe000 /home/patrick/cpsMONK/artifacts/xiao-oled/boot_app0.bin 0x10000 /home/patrick/cpsMONK/artifacts/xiao-oled/firmware.bin
 esptool.py v4.11.0
-Wrote 0xd8450 bytes to file /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin, ready to flash to offset 0x0
+Wrote 0xd85b0 bytes to file /home/patrick/cpsMONK/artifacts/xiao-oled/cpsmonk-xiao-oled-merged.bin, ready to flash to offset 0x0
 
 $ /home/patrick/.local/share/pipx/venvs/platformio/bin/python /home/patrick/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 image_info /home/patrick/cpsMONK/artifacts/xiao-oled/firmware.bin
 esptool.py v4.11.0
-File size: 820304 (bytes)
+File size: 820656 (bytes)
 Image version: 1
 Entry point: 4037707c
 5 segments
 
-Segment 1: len 0x2551c load 0x3c090020 file_offs 0x00000018 [DROM]
-Segment 2: len 0x0563c load 0x3fc94db0 file_offs 0x0002553c [BYTE_ACCESSIBLE,MEM_INTERNAL,DRAM]
-Segment 3: len 0x05490 load 0x40374000 file_offs 0x0002ab80 [MEM_INTERNAL,IRAM]
-Segment 4: len 0x8cae0 load 0x42000020 file_offs 0x00030018 [IROM]
-Segment 5: len 0x0b920 load 0x40379490 file_offs 0x000bcb00 [MEM_INTERNAL,IRAM]
-Checksum: 75 (valid)
-Validation Hash: 36f459dec44456aa32f87420e35966b1ae3f0450cdf83b953dece27fe273a936 (valid)
+Segment 1: len 0x25580 load 0x3c090020 file_offs 0x00000018 [DROM]
+Segment 2: len 0x0563c load 0x3fc94db0 file_offs 0x000255a0 [BYTE_ACCESSIBLE,MEM_INTERNAL,DRAM]
+Segment 3: len 0x0542c load 0x40374000 file_offs 0x0002abe4 [MEM_INTERNAL,IRAM]
+Segment 4: len 0x8cbdc load 0x42000020 file_offs 0x00030018 [IROM]
+Segment 5: len 0x0b984 load 0x4037942c file_offs 0x000bcbfc [MEM_INTERNAL,IRAM]
+Checksum: 0a (valid)
+Validation Hash: 484e94807d3e441cbfc90890f731c405e699d2b7044afff361d2e2d858dde408 (valid)
 
 PASS merged image: all four images match byte-for-byte at verified offsets.
 NO HARDWARE FLASH OR PHYSICAL VALIDATION PERFORMED.

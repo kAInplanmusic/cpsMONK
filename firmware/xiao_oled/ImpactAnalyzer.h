@@ -137,7 +137,12 @@ public:
         refractory_ = 0; gateImpacts_ = 0; warmupStart_ = 0; windowSamples_ = 0;
         windowSeconds_ = 0; gateOpen_ = false;
         preHead_ = warmupStrokes_ = 0;
-        levelHold_ = 0; levelGoodSeen_ = false;
+        // NOTE: levelHold_ is cleared (a stale reading must not be trusted) but
+        // levelGoodSeen_ is deliberately KEPT. It is the arming latch of a device
+        // with no button: clearing it in start()/reset() would leave the firmware
+        // idle forever after the first run, because the level monitor only runs
+        // while idle and nothing on the board can re-arm it by hand.
+        levelHold_ = 0;
         result_ = Result(); error_[0] = '\0';
         std::memset(ring_, 0, sizeof(ring_));
         std::memset(preTimes_, 0, sizeof(preTimes_));

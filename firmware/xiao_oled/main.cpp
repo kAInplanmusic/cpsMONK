@@ -69,6 +69,22 @@ static bool lock() {
     return false;
 }
 static void unlock() { xSemaphoreGive(guard); }
+// No button exists on this build, so a run must arm itself. Strict order:
+//   1. the level indicator must CURRENTLY sit in the target band, so a run never
+//      starts while the microphone is mispositioned, and
+//   2. the band must have been good at least once since boot, so the firmware
+//      does not start on a lucky noisy instant either.
+// The second condition is a latch that survives reset() on purpose: on a board
+// with no input control, clearing it would strand the device idle forever.
+static bool maybeAutoStart() {
+    if (!audioReady || active()) return false;
+    if (!analyzer->levelWasGood()) return false;
+    if (analyzer->levelAssessment() != cps::Level::Good) return false;
+    // Leave a dead line and an overloaded input alone; both need the operator.
+    rawCount = 0; ++captureEpoch;
+    analyzer->start();
+    return true;
+}
 static void statusInto(JsonObject j) {
     const auto& r = analyzer->result();
     j["state"] = stateName(analyzer->state());
@@ -89,6 +105,8 @@ static void statusInto(JsonObject j) {
     j["thresholdFloor"] = analyzer->config.thresholdFloor;
     j["level"] = levelName(analyzer->levelAssessment());
     j["levelAmplitude"] = r.levelAmplitude; j["levelDb"] = r.levelDb;
+    j["levelFloor"] = cps::LEVEL_SILENT_FLOOR;
+    j["autoArm"] = analyzer->levelWasGood();
     // Band edges so the UI can draw the target zone and scale the bar honestly.
     j["levelLow"] = analyzer->config.levelLow;
     j["levelHigh"] = analyzer->config.levelHigh;
@@ -340,7 +358,8 @@ static void drawOled() {
                          analyzer->config.levelHigh, analyzer->config.levelLoud, band);
             oled.setCursor(0, 24);
             if (band == cps::Level::Silent) oled.print("Kabel/L-R pruefen");
-            else if (levelReady) oled.print("Start moeglich");
+            else if (band == cps::Level::Good) oled.print(levelReady ? "Auto-Start aktiv" : "Abstand einstellen");
+            else if (levelReady) oled.print("Abstand korrigieren");
             else oled.print("Abstand einstellen");
             break;
         }
@@ -419,18 +438,29 @@ void setup() {
 }
 void loop() {
     server.handleClient();
-    while (Serial.available()) {
-        char c = Serial.read();
-        if (xSemaphoreTake(guard, pdMS_TO_TICKS(100)) == pdTRUE) {
-            if (c == 's' && audioReady && !active()) { rawCount = 0; ++captureEpoch; analyzer->start(); }
-            if (c == 'r') { analyzer->reset(); rawCount = 0; ++captureEpoch; }
-            if (c == '?') Serial.printf("state=%s impacts=%u seen=%u cps=%.3f form=%.2f level=%s err=%s\n",
+    // Hold one pending console character across loop iterations: dropping it on a
+    // mutex miss made 's' and 'r' unreliable from a terminal.
+    static char pending = 0;
+    if (!pending && Serial.available()) pending = char(Serial.read());
+    if (pending && xSemaphoreTake(guard, pdMS_TO_TICKS(0)) == pdTRUE) {
+        const char c = pending;
+        pending = 0;
+        if (c == 's' && audioReady && !active()) { rawCount = 0; ++captureEpoch; analyzer->start(); }
+        if (c == 'r') { analyzer->reset(); rawCount = 0; ++captureEpoch; }
+        // 'r' must also re-arm the cold start, otherwise the device would sit
+        // idle forever on a build without a button.
+        if (c == '?') {
+            const auto& r = analyzer->result();
+            Serial.printf("state=%s impacts=%u seen=%u cps=%.3f form=%.2f level=%s amp=%.6f dB=%.1f "
+                          "noise=%.7f thr=%.6f win=%.1fs gate=%d err=%s\n",
                 stateName(analyzer->state()), unsigned(analyzer->count()), unsigned(analyzer->seen()),
-                analyzer->result().cps, analyzer->result().shapeSimilarity,
-                levelName(analyzer->levelAssessment()), analyzer->error());
-            unlock();
+                r.cps, r.shapeSimilarity, levelName(analyzer->levelAssessment()),
+                r.levelAmplitude, r.levelDb, r.noiseRms, r.threshold, r.windowSeconds,
+                analyzer->levelWasGood() ? 1 : 0, analyzer->error());
         }
+        unlock();
     }
+    maybeAutoStart();
     static uint32_t lastDraw = 0;
     if (millis() - lastDraw > 250) { lastDraw = millis(); drawOled(); }
     delay(1);

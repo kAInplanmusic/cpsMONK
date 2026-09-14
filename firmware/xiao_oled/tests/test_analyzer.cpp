@@ -201,6 +201,20 @@ void levelTests() {
         check(nom.result().levelAmplitude > 0.02f && nom.result().levelAmplitude < 0.09f,
               "held amplitude tracks the stroke peak, not the duty cycle");
     }
+    // Cold-start arming: the device has no button, so the arming latch must
+    // survive reset()/start(). If it did not, the firmware would run exactly one
+    // measurement and then sit idle forever with no way to re-arm it.
+    {
+        ImpactAnalyzer arm;
+        feedTrain(arm, 0.045f, 150, 40000);
+        check(arm.levelWasGood(), "good band arms the device");
+        check(arm.result().levelAmplitude > 0, "a real reading was taken before arming");
+        arm.start();
+        check(arm.levelWasGood(), "arming survives start()");
+        arm.reset();
+        check(arm.levelWasGood(), "arming survives reset()");
+        check(arm.result().levelAmplitude == 0, "reset still clears the stale level reading");
+    }
     // The hold decays with a ~1 s time constant once the machine stops. One
     // second of silence leaves roughly a third, which is deliberate: the display
     // must not flicker while the operator watches it.
