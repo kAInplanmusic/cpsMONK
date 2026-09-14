@@ -29,6 +29,10 @@ yarn-error.log*
 .env
 .pio/
 
+# Python (tools/)
+__pycache__/
+*.py[cod]
+
 # Local env backups (contain secrets, never commit)
 .env.bak*
 
