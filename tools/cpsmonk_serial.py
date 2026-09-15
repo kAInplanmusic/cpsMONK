@@ -238,6 +238,12 @@ def send_and_dump(sp: serial.Serial, key: bytes, seconds: float) -> int:
 def print_human(status: dict) -> None:
     level_text = translate(_LEVEL_TEXT, status.get("level", ""))
     state_raw = str(status.get("state", ""))
+    # monitor() laeuft nur, wenn keine Messung aktiv ist (siehe main.cpp:
+    # 'Idle: only the level indicator consumes samples'). In den aktiven
+    # Zustaenden stehen level/amp/dc deshalb per Design auf 0. Ohne diesen
+    # Hinweis liest sich das wie "Mikrofon tot".
+    level_live = state_raw in ("idle", "failed")
+    level_note = "" if level_live else "   (in diesem Zustand nicht gemessen)"
 
     def row(key: str, text: str) -> None:
         print(f"  {_LABELS.get(key, key):<22} {text}")
@@ -246,13 +252,14 @@ def print_human(status: dict) -> None:
     row("impacts", f"{status.get('impacts', 0)} (gesehen: {status.get('seen', 0)})")
     row("cps", f"{status.get('cps', 0.0):.3f}")
     row("form", f"{status.get('form', 0.0):.2f} %")
-    row("level", f"{level_text}  (amp {status.get('amp', 0.0):.6f}, {status.get('dB', 0.0):.1f} dB)")
+    row("level", f"{level_text}  (amp {status.get('amp', 0.0):.6f}, {status.get('dB', 0.0):.1f} dB){level_note}")
     row("noise", f"{status.get('noise', 0.0):.7f}   (Schwelle {status.get('thr', 0.0):.6f})")
     row("win", f"{status.get('win', 0.0):.1f}")
     row("gate", "ja" if status.get("gate") else "nein")
     dc = float(status.get("dc") or 0.0)
     amp = float(status.get("amp") or 0.0)
-    row("dc", f"{dc:+.5f}" + ("   <-- auffaellig" if abs(dc) >= DC_SUSPECT else ""))
+    row("dc", f"{dc:+.5f}"
+        + ("   <-- auffaellig" if abs(dc) >= DC_SUSPECT and level_live else level_note))
     oled = status.get("oled")
     row("oled", "ja" if oled else ("nein  <-- Display bleibt schwarz" if oled == 0 else "?"))
     error = status.get("err") or "-"
