@@ -39,6 +39,8 @@ static bool oledTest = false;
 static bool wifiEnabled = false;
 // Adresse, auf der das Panel geantwortet hat - fuer die Gesundheitspruefung.
 static uint8_t oledAddr = 0;
+// Statuszeile, ausserhalb des Mutex gefuellt und gedruckt (siehe loop()).
+static char statusLine[256];
 static char apPassword[13];
 static char apName[24];
 static WebServer server(80);
@@ -316,7 +318,11 @@ static bool initAudio() {
     c.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
     c.communication_format = I2S_COMM_FORMAT_STAND_I2S;
     c.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
-    c.dma_buf_count = 8; c.dma_buf_len = 256;
+    // 16 x 256 frames at 32 kHz gives 128 ms of slack. The previous 8 x 256
+    // (64 ms) was tight enough that a single blocking serial write could
+    // overflow the RX queue and invalidate a run with "Audio-Datenverlust".
+    // Latency is irrelevant here: every run is evaluated after it finishes.
+    c.dma_buf_count = 16; c.dma_buf_len = 256;
     c.use_apll = false;
     if (i2s_driver_install(I2S_NUM_0, &c, 16, &i2sEvents) != ESP_OK) return false;
     i2s_pin_config_t p = {};
@@ -504,11 +510,18 @@ static void stopWifi() {
 // WLAN ist das der einzige Weg an die Einzelwerte. Bewusst nur Kennzahlen je
 // Impuls - die 128 Punkte je Kurve sprengen eine Textzeile.
 static void dumpCsv() {
+    // Completed data is immutable during downloads - the same invariant the HTTP
+    // sendCsv() relies on. So the mutex is taken only to check the state and the
+    // row count, and released BEFORE printing: ~45 kB over 115200 baud takes
+    // seconds, and holding the mutex that long starves the audio task (its DMA
+    // buffers only cover 64 ms) and invalidates the next run.
+    size_t count = 0;
     if (xSemaphoreTake(guard, pdMS_TO_TICKS(200)) != pdTRUE) { Serial.println("beschaeftigt, erneut versuchen"); return; }
-    if (analyzer->state() != cps::State::Complete) {
-        xSemaphoreGive(guard); Serial.println("keine abgeschlossene Messung"); return;
-    }
-    const size_t count = analyzer->count();
+    const bool complete = analyzer->state() == cps::State::Complete;
+    if (complete) count = analyzer->count();
+    xSemaphoreGive(guard);
+    if (!complete) { Serial.println("keine abgeschlossene Messung"); return; }
+
     Serial.println("index,sample,time_s,interval_ms,amplitude,similarity");
     for (size_t i = 0; i < count; ++i) {
         const uint64_t sample = analyzer->impactSample(i);
@@ -517,7 +530,6 @@ static void dumpCsv() {
             (unsigned long long)sample, double(sample) / cps::SAMPLE_RATE, dt,
             analyzer->amplitude(i), analyzer->similarity(i));
     }
-    xSemaphoreGive(guard);
     Serial.printf("CSV Ende: %u Zeilen\n", unsigned(count));
 }
 static void fatal(const char* message) {
@@ -594,21 +606,29 @@ void loop() {
         if (c == 'r') { analyzer->reset(); rawCount = 0; ++captureEpoch; }
         // 'r' must also re-arm the cold start, otherwise the device would sit
         // idle forever on a build without a button.
+        // The status line is FORMATTED here but PRINTED after unlocking. A serial
+        // write can block on the host and the DMA only buffers 8 x 256 frames,
+        // i.e. 64 ms at 32 kHz - holding the mutex across the write is enough to
+        // lose audio blocks and produce "Audio-Datenverlust".
+        bool haveLine = false;
         if (c == '?') {
             const auto& r = analyzer->result();
             // 'dc' is the raw-input average: after the indicator's DC blocker it
             // is the only way to tell a rail-stuck line (dc ~1, amp small) from a
             // genuinely quiet room (dc ~0, amp small). 'oled' is the display probe
             // result. Keep 'err' last, it is free text and may contain spaces.
-            Serial.printf("state=%s impacts=%u seen=%u cps=%.3f form=%.2f level=%s amp=%.6f dB=%.1f "
-                          "noise=%.7f thr=%.6f win=%.1fs gate=%d dc=%.5f oled=%d err=%s\n",
+            snprintf(statusLine, sizeof(statusLine),
+                "state=%s impacts=%u seen=%u cps=%.3f form=%.2f level=%s amp=%.6f dB=%.1f "
+                "noise=%.7f thr=%.6f win=%.1fs gate=%d dc=%.5f oled=%d err=%s\n",
                 stateName(analyzer->state()), unsigned(analyzer->count()), unsigned(analyzer->seen()),
                 r.cps, r.shapeSimilarity, levelName(analyzer->levelAssessment()),
                 r.levelAmplitude, r.levelDb, r.noiseRms, r.threshold, r.windowSeconds,
                 analyzer->levelWasGood() ? 1 : 0, analyzer->levelDc(), oledReady ? 1 : 0,
                 analyzer->error());
+            haveLine = true;
         }
         unlock();
+        if (haveLine) Serial.write(statusLine);
     }
     // The single probe in setup() can lose its first transaction on a freshly
     // configured bus. It used to be the only attempt, so one failed probe left
