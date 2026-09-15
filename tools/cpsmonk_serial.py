@@ -20,6 +20,9 @@ Beispiele:
     python3 tools/cpsmonk_serial.py watch --interval 2
     python3 tools/cpsmonk_serial.py start
     python3 tools/cpsmonk_serial.py reset
+    python3 tools/cpsmonk_serial.py oled      # Display: I2C-Scan + Neu-Init
+    python3 tools/cpsmonk_serial.py clock     # dasselbe bei 100 kHz statt 400 kHz
+    python3 tools/cpsmonk_serial.py test      # Vollbild weiss ein/aus
 """
 
 from __future__ import annotations
@@ -44,14 +47,14 @@ DEFAULT_BAUD = 115200
 
 # Reihenfolge wie in main.cpp (loop, Kommando '?'). 'dc' steht vor 'err',
 # weil 'err' Freitext ist und dahinter nichts mehr geparst werden kann.
-_FIELDS = ("state", "impacts", "seen", "cps", "form", "level", "amp", "dB", "noise", "thr", "win", "gate", "dc", "err")
+_FIELDS = ("state", "impacts", "seen", "cps", "form", "level", "amp", "dB", "noise", "thr", "win", "gate", "dc", "oled", "err")
 
 # Feldreihenfolge wie in main.cpp (Kommando '?'). Alle Felder ausser dem
 # letzten sind nicht-gierig, damit 'err' als Freitext Leerzeichen enthalten
 # darf ("Impulsrate unter 50 CPS: Messung abgebrochen").
 _STATUS_RE = re.compile(r"\s+".join(f"{name}=(?P<{name}>.*?)" for name in _FIELDS[:-1]) + r"\s+err=(?P<err>.*)")
 
-_INT_FIELDS = {"impacts", "seen", "gate"}
+_INT_FIELDS = {"impacts", "seen", "gate", "oled"}
 _FLOAT_FIELDS = {"cps", "form", "amp", "dB", "noise", "thr", "win", "dc"}
 
 # Werte stammen aus levelName()/stateName() in firmware/xiao_oled/main.cpp.
@@ -95,6 +98,7 @@ _LABELS = {
     "win": "Fenster s",
     "gate": "Auto-Start frei",
     "dc": "DC-Offset roh",
+    "oled": "OLED erkannt",
     "err": "Fehler",
 }
 
@@ -212,6 +216,25 @@ Abhilfe: Firmware neu flashen (der Upload endet mit einem Hardware-Reset):
 Danach diesen Befehl erneut ausfuehren. Nicht per DTR/RTS zuruecksetzen."""
 
 
+def send_and_dump(sp: serial.Serial, key: bytes, seconds: float) -> int:
+    """Ein Konsolenkommando senden und die Antwort im Klartext ausgeben.
+
+    Fuer die Diagnosebefehle der Firmware ('o' Display-Scan, 'k' I2C-Takt),
+    deren Ausgabe nicht dem Statuszeilen-Format folgt.
+    """
+    sp.reset_input_buffer()
+    sp.write(key)
+    sp.flush()
+    got = False
+    for line in iter_lines(sp, time.monotonic() + seconds):
+        print(line)
+        got = True
+    if not got:
+        print(NO_ANSWER_HINT, file=sys.stderr)
+        return 1
+    return 0
+
+
 def print_human(status: dict) -> None:
     level_text = translate(_LEVEL_TEXT, status.get("level", ""))
     state_raw = str(status.get("state", ""))
@@ -230,6 +253,8 @@ def print_human(status: dict) -> None:
     dc = float(status.get("dc") or 0.0)
     amp = float(status.get("amp") or 0.0)
     row("dc", f"{dc:+.5f}" + ("   <-- auffaellig" if abs(dc) >= DC_SUSPECT else ""))
+    oled = status.get("oled")
+    row("oled", "ja" if oled else ("nein  <-- Display bleibt schwarz" if oled == 0 else "?"))
     error = status.get("err") or "-"
     row("err", str(error))
 
@@ -266,7 +291,7 @@ def summary_line(status: dict) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("status", "watch", "start", "reset"), help="Aktion")
+    parser.add_argument("command", choices=("status", "watch", "start", "reset", "oled", "clock", "test"), help="Aktion")
     parser.add_argument("--port", help="serieller Port (Standard: automatisch)")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help=f"Baudrate (Standard {DEFAULT_BAUD})")
     parser.add_argument("--json", action="store_true", help="Status als JSON ausgeben")
@@ -282,6 +307,16 @@ def main() -> int:
 
     sp = open_port(port, args.baud)
     try:
+        if args.command == "oled":
+            # Firmware-Diagnose: I2C-Bus scannen und das Display neu initialisieren.
+            return send_and_dump(sp, b"o", args.wait)
+        if args.command == "clock":
+            # Dasselbe beim anderen I2C-Takt (400 kHz <-> 100 kHz).
+            return send_and_dump(sp, b"k", args.wait)
+        if args.command == "test":
+            # Vollbild weiss ein-/ausschalten: trennt "Panel wird nicht
+            # angesteuert" von "falscher Controller/Geometrie".
+            return send_and_dump(sp, b"f", args.wait)
         if args.command == "status":
             status = read_status(sp, args.wait, retries=3)
             if status is None:

@@ -30,6 +30,11 @@ static SemaphoreHandle_t guard;
 static QueueHandle_t i2sEvents;
 static bool audioReady = false;
 static bool oledReady = false;
+// Held true by the 'f' console command: a full white screen that the normal UI
+// must not paint over. A panel that answers on I2C and accepts the init
+// sequence can still show nothing (wrong controller or geometry), and "all
+// white" is the only pattern that separates "not driven" from "wrong content".
+static bool oledTest = false;
 static char apPassword[13];
 static char apName[24];
 static WebServer server(80);
@@ -334,7 +339,7 @@ static void drawLevelBar(int x, int y, int w, int h, float level, float low,
     (void)band;
 }
 static void drawOled() {
-    if (!oledReady || xSemaphoreTake(guard, pdMS_TO_TICKS(5)) != pdTRUE) return;
+    if (!oledReady || oledTest || xSemaphoreTake(guard, pdMS_TO_TICKS(5)) != pdTRUE) return;
     const auto s = analyzer->state();
     const auto count = analyzer->count();
     const auto r = analyzer->result();
@@ -398,6 +403,36 @@ static void drawOled() {
     }
     oled.display();
 }
+static uint32_t i2cClock = 400000;
+// Every address that ACKs, so an empty bus (wiring/power) and a present but
+// unsupported panel (wrong controller or geometry) can be told apart.
+static uint8_t i2cScan(uint8_t* found, uint8_t maxFound) {
+    uint8_t n = 0;
+    for (uint8_t addr = 1; addr < 0x7f; ++addr) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0 && n < maxFound) found[n++] = addr;
+    }
+    return n;
+}
+static bool probeOled() {
+    oledReady = false;
+    for (uint8_t addr : {uint8_t(0x3c), uint8_t(0x3d)}) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) { oledReady = oled.begin(SSD1306_SWITCHCAPVCC, addr, false, false); break; }
+    }
+    return oledReady;
+}
+// Diagnostics for the one part of the build that cannot be verified over USB:
+// the display. Run with 'o', repeated with 'k' at the other I2C clock.
+static void reportOled() {
+    uint8_t found[16];
+    const uint8_t n = i2cScan(found, sizeof(found));
+    Serial.printf("OLED: ready=%d clock=%lu Hz Adressen:", oledReady ? 1 : 0, (unsigned long)i2cClock);
+    if (!n) Serial.print(" keine (Bus leer -> Verdrahtung/Spannung)");
+    for (uint8_t i = 0; i < n; ++i) Serial.printf(" 0x%02X", found[i]);
+    Serial.println();
+    if (!oledReady && n) Serial.println("  Panel antwortet, aber nicht als SSD1306 128x32 initialisiert.");
+}
 static void fatal(const char* message) {
     Serial.println(message);
     if (oledReady) { oled.clearDisplay(); oled.setTextColor(SSD1306_WHITE); oled.setTextSize(1); oled.setCursor(0, 0); oled.println(message); oled.display(); }
@@ -405,11 +440,8 @@ static void fatal(const char* message) {
 }
 void setup() {
     Serial.begin(115200);
-    Wire.begin(OLED_SDA, OLED_SCL); Wire.setClock(400000); Wire.setTimeOut(25);
-    for (uint8_t addr : {uint8_t(0x3c), uint8_t(0x3d)}) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) { oledReady = oled.begin(SSD1306_SWITCHCAPVCC, addr, false, false); break; }
-    }
+    Wire.begin(OLED_SDA, OLED_SCL); Wire.setClock(i2cClock); Wire.setTimeOut(25);
+    probeOled();
     guard = xSemaphoreCreateMutex(); if (!guard) fatal("Mutex fehlt");
     if (!psramFound()) fatal("PSRAM fehlt: qio_opi pruefen");
     void* memory = heap_caps_malloc(sizeof(cps::ImpactAnalyzer), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -424,6 +456,7 @@ void setup() {
     Serial.printf("\ncpsMONK OLED: SSID %s | Passwort %s | http://192.168.4.1\n", apName, apPassword);
     Serial.printf("Ziel %u Impulse, Fenster %u/%us, Auto-Start ab %.0f CPS.\n",
         unsigned(cps::TARGET), unsigned(cps::TARGET), unsigned(cps::WINDOW_MAX_SECONDS), cps::CPS_GATE);
+    Serial.printf("OLED: ready=%d | o=Display-Scan, k=I2C-Takt, f=Vollbild-Test\n", oledReady ? 1 : 0);
     Serial.println("s=Start (Auto-Start ab 4 stabilen Impulsen), r=Reset, ?=Status. Keine Kraftmessung.");
     server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", WEB_UI); });
     server.on("/api/status", HTTP_GET, getStatus);
@@ -445,7 +478,29 @@ void loop() {
     // mutex miss made 's' and 'r' unreliable from a terminal.
     static char pending = 0;
     if (!pending && Serial.available()) pending = char(Serial.read());
-    if (pending && xSemaphoreTake(guard, pdMS_TO_TICKS(0)) == pdTRUE) {
+    // Display diagnostics run OUTSIDE the mutex: an I2C bus scan takes tens of
+    // milliseconds, and holding 'guard' that long would starve the audio task
+    // (it re-acquires the mutex twice per 16 ms block and would drop samples).
+    if (pending == 'o') {
+        pending = 0;
+        probeOled(); reportOled();
+    } else if (pending == 'k') {
+        pending = 0;
+        i2cClock = (i2cClock == 400000) ? 100000 : 400000;
+        Wire.setClock(i2cClock);
+        probeOled(); reportOled();
+    } else if (pending == 'f') {
+        pending = 0;
+        oledTest = !oledTest;
+        Serial.printf("OLED-Vollbild: %s\n", oledTest ? "AN - erscheint das Display weiss?" : "AUS");
+        if (oledReady) {
+            oled.clearDisplay();
+            if (oledTest) oled.fillScreen(SSD1306_WHITE);
+            oled.display();
+        } else {
+            Serial.println("  kein Display erkannt, Muster nicht gesendet");
+        }
+    } else if (pending && xSemaphoreTake(guard, pdMS_TO_TICKS(0)) == pdTRUE) {
         const char c = pending;
         pending = 0;
         if (c == 's' && audioReady && !active()) { rawCount = 0; ++captureEpoch; analyzer->start(); }
@@ -456,16 +511,26 @@ void loop() {
             const auto& r = analyzer->result();
             // 'dc' is the raw-input average: after the indicator's DC blocker it
             // is the only way to tell a rail-stuck line (dc ~1, amp small) from a
-            // genuinely quiet room (dc ~0, amp small). Keep 'err' last, it is free
-            // text and may contain spaces.
+            // genuinely quiet room (dc ~0, amp small). 'oled' is the display probe
+            // result. Keep 'err' last, it is free text and may contain spaces.
             Serial.printf("state=%s impacts=%u seen=%u cps=%.3f form=%.2f level=%s amp=%.6f dB=%.1f "
-                          "noise=%.7f thr=%.6f win=%.1fs gate=%d dc=%.5f err=%s\n",
+                          "noise=%.7f thr=%.6f win=%.1fs gate=%d dc=%.5f oled=%d err=%s\n",
                 stateName(analyzer->state()), unsigned(analyzer->count()), unsigned(analyzer->seen()),
                 r.cps, r.shapeSimilarity, levelName(analyzer->levelAssessment()),
                 r.levelAmplitude, r.levelDb, r.noiseRms, r.threshold, r.windowSeconds,
-                analyzer->levelWasGood() ? 1 : 0, analyzer->levelDc(), analyzer->error());
+                analyzer->levelWasGood() ? 1 : 0, analyzer->levelDc(), oledReady ? 1 : 0,
+                analyzer->error());
         }
         unlock();
+    }
+    // The single probe in setup() can lose its first transaction on a freshly
+    // configured bus. It used to be the only attempt, so one failed probe left
+    // the display dark for the whole session even though the panel answers on
+    // 0x3C - which looks exactly like broken hardware. Retry until it answers.
+    static uint32_t lastOledProbe = 0;
+    if (!oledReady && millis() - lastOledProbe > 1000) {
+        lastOledProbe = millis();
+        if (probeOled()) Serial.println("OLED nachtraeglich erkannt, Anzeige aktiv");
     }
     maybeAutoStart();
     static uint32_t lastDraw = 0;
