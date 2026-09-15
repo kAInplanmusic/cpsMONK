@@ -23,6 +23,8 @@ Beispiele:
     python3 tools/cpsmonk_serial.py oled      # Display: I2C-Scan + Neu-Init
     python3 tools/cpsmonk_serial.py clock     # dasselbe bei 100 kHz statt 400 kHz
     python3 tools/cpsmonk_serial.py test      # Vollbild weiss ein/aus
+    python3 tools/cpsmonk_serial.py csv       # Einzelwerte der Messung
+    python3 tools/cpsmonk_serial.py wifi      # WLAN ein/aus (Standard: aus)
 """
 
 from __future__ import annotations
@@ -298,7 +300,7 @@ def summary_line(status: dict) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("status", "watch", "start", "reset", "oled", "clock", "test"), help="Aktion")
+    parser.add_argument("command", choices=("status", "watch", "start", "reset", "oled", "clock", "test", "csv", "wifi"), help="Aktion")
     parser.add_argument("--port", help="serieller Port (Standard: automatisch)")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help=f"Baudrate (Standard {DEFAULT_BAUD})")
     parser.add_argument("--json", action="store_true", help="Status als JSON ausgeben")
@@ -320,6 +322,12 @@ def main() -> int:
         if args.command == "clock":
             # Dasselbe beim anderen I2C-Takt (400 kHz <-> 100 kHz).
             return send_and_dump(sp, b"k", args.wait)
+        if args.command == "csv":
+            # Einzelwerte der abgeschlossenen Messung ueber die Konsole.
+            return send_and_dump(sp, b"c", max(args.wait, 20.0))
+        if args.command == "wifi":
+            # WLAN ein-/ausschalten (Standard: aus).
+            return send_and_dump(sp, b"w", args.wait)
         if args.command == "test":
             # Vollbild weiss ein-/ausschalten: trennt "Panel wird nicht
             # angesteuert" von "falscher Controller/Geometrie".

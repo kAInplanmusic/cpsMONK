@@ -35,6 +35,8 @@ static bool oledReady = false;
 // sequence can still show nothing (wrong controller or geometry), and "all
 // white" is the only pattern that separates "not driven" from "wrong content".
 static bool oledTest = false;
+// WLAN ist standardmaessig aus; das Geraet soll ohne AP benutzbar sein.
+static bool wifiEnabled = false;
 static char apPassword[13];
 static char apName[24];
 static WebServer server(80);
@@ -359,8 +361,11 @@ static void drawOled() {
     oled.clearDisplay(); oled.setTextColor(SSD1306_WHITE);
     switch (s) {
         case cps::State::Idle: {
-            // Frame 1: level indicator; frame 2: WLAN credentials.
-            if ((millis() / 6000) % 2) {
+            // Frame 1: level indicator; frame 2: WLAN credentials, but only
+            // while the AP actually runs. With WLAN off the level indicator
+            // stays on screen permanently instead of flicking to a password
+            // nobody needs.
+            if (wifiEnabled && (millis() / 6000) % 2) {
                 oled.setTextSize(1); oled.setCursor(0, 0); oled.println("WLAN Passwort:");
                 oled.println(apPassword); oled.println("http://192.168.4.1");
                 break;
@@ -443,6 +448,51 @@ static void reportOled() {
     Serial.println();
     if (!oledReady && n) Serial.println("  Panel antwortet, aber nicht als SSD1306 128x32 initialisiert.");
 }
+static void startWifi() {
+    WiFi.mode(WIFI_AP);
+    const uint64_t mac = ESP.getEfuseMac();
+    snprintf(apName, sizeof(apName), "cpsMONK-%04X", unsigned(mac & 0xffff));
+    snprintf(apPassword, sizeof(apPassword), "%08lx", (unsigned long)esp_random());
+    if (!WiFi.softAP(apName, apPassword, 1, 0, 2)) { Serial.println("WLAN Start fehlgeschlagen"); return; }
+    server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", WEB_UI); });
+    server.on("/api/status", HTTP_GET, getStatus);
+    server.on("/api/start", HTTP_POST, beginMeasurement);
+    server.on("/api/reset", HTTP_POST, resetMeasurement);
+    server.on("/api/config", HTTP_POST, configure);
+    server.on("/api/waveforms", HTTP_GET, [] { sendWaveforms(false); });
+    server.on("/api/result", HTTP_GET, [] { sendWaveforms(true); });
+    server.on("/api/impacts.csv", HTTP_GET, sendCsv);
+    server.on("/api/raw.wav", HTTP_GET, sendWav);
+    server.onNotFound([] { server.send(404, "text/plain", "Not found"); });
+    server.begin();
+    Serial.printf("WLAN AN: SSID %s | Passwort %s | http://192.168.4.1\n", apName, apPassword);
+}
+static void stopWifi() {
+    server.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+    Serial.println("WLAN AUS");
+}
+// CSV der erkannten Impulse ueber die Konsole. Ersetzt den HTTP-Download: ohne
+// WLAN ist das der einzige Weg an die Einzelwerte. Bewusst nur Kennzahlen je
+// Impuls - die 128 Punkte je Kurve sprengen eine Textzeile.
+static void dumpCsv() {
+    if (xSemaphoreTake(guard, pdMS_TO_TICKS(200)) != pdTRUE) { Serial.println("beschaeftigt, erneut versuchen"); return; }
+    if (analyzer->state() != cps::State::Complete) {
+        xSemaphoreGive(guard); Serial.println("keine abgeschlossene Messung"); return;
+    }
+    const size_t count = analyzer->count();
+    Serial.println("index,sample,time_s,interval_ms,amplitude,similarity");
+    for (size_t i = 0; i < count; ++i) {
+        const uint64_t sample = analyzer->impactSample(i);
+        const double dt = i ? 1000.0 * double(sample - analyzer->impactSample(i - 1)) / cps::SAMPLE_RATE : 0.0;
+        Serial.printf("%u,%llu,%.7f,%.6f,%.8f,%.4f\n", unsigned(i + 1),
+            (unsigned long long)sample, double(sample) / cps::SAMPLE_RATE, dt,
+            analyzer->amplitude(i), analyzer->similarity(i));
+    }
+    xSemaphoreGive(guard);
+    Serial.printf("CSV Ende: %u Zeilen\n", unsigned(count));
+}
 static void fatal(const char* message) {
     Serial.println(message);
     if (oledReady) { oled.clearDisplay(); oled.setTextColor(SSD1306_WHITE); oled.setTextSize(1); oled.setCursor(0, 0); oled.println(message); oled.display(); }
@@ -458,32 +508,24 @@ void setup() {
     rawPcm = static_cast<int16_t*>(heap_caps_malloc(RAW_CAPACITY * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!memory || !rawPcm) fatal("PSRAM Speicher fehlt");
     analyzer = new(memory) cps::ImpactAnalyzer();
-    WiFi.mode(WIFI_AP);
-    uint64_t mac = ESP.getEfuseMac();
-    snprintf(apName, sizeof(apName), "cpsMONK-%04X", unsigned(mac & 0xffff));
-    snprintf(apPassword, sizeof(apPassword), "%08lx", (unsigned long)esp_random());
-    if (!WiFi.softAP(apName, apPassword, 1, 0, 2)) fatal("WLAN Start fehlgeschlagen");
-    Serial.printf("\ncpsMONK OLED: SSID %s | Passwort %s | http://192.168.4.1\n", apName, apPassword);
+    // WLAN ist standardmaessig AUS. Das Geraet ist ein eigenstaendiges
+    // Messinstrument: Anzeige auf dem OLED, Bedienung ueber die serielle
+    // Konsole. Ein Access Point ist fuer die Messung nicht noetig, und ein
+    // Passwort, das bei jedem Neustart neu gewuerfelt wird, ist am
+    // Messplatz ohnehin nur hinderlich. Mit 'w' laesst sich der AP zur
+    // Laufzeit zuschalten, falls die Web-Oberflaeche oder ein Download
+    // doch einmal gebraucht wird.
+    if (wifiEnabled) startWifi();
     Serial.printf("Ziel %u Impulse, Fenster %u/%us, Auto-Start ab %.0f CPS.\n",
         unsigned(cps::TARGET), unsigned(cps::TARGET), unsigned(cps::WINDOW_MAX_SECONDS), cps::CPS_GATE);
     Serial.printf("OLED: ready=%d | o=Display-Scan, k=I2C-Takt, f=Vollbild-Test\n", oledReady ? 1 : 0);
-    Serial.println("s=Start (Auto-Start ab 4 stabilen Impulsen), r=Reset, ?=Status. Keine Kraftmessung.");
-    server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", WEB_UI); });
-    server.on("/api/status", HTTP_GET, getStatus);
-    server.on("/api/start", HTTP_POST, beginMeasurement);
-    server.on("/api/reset", HTTP_POST, resetMeasurement);
-    server.on("/api/config", HTTP_POST, configure);
-    server.on("/api/waveforms", HTTP_GET, [] { sendWaveforms(false); });
-    server.on("/api/result", HTTP_GET, [] { sendWaveforms(true); });
-    server.on("/api/impacts.csv", HTTP_GET, sendCsv);
-    server.on("/api/raw.wav", HTTP_GET, sendWav);
-    server.onNotFound([] { server.send(404, "text/plain", "Not found"); });
-    server.begin();
+    Serial.println("s=Start, r=Reset, ?=Status, c=CSV der Impulse, w=WLAN ein/aus.");
+    Serial.println("Keine Kraftmessung: CPS und Formaehnlichkeit sagen nichts ueber Schlagkraft.");
     audioReady = initAudio();
     if (!audioReady) { xSemaphoreTake(guard, portMAX_DELAY); analyzer->fail("I2S Initialisierung fehlgeschlagen"); unlock(); }
 }
 void loop() {
-    server.handleClient();
+    if (wifiEnabled) server.handleClient();
     // Hold one pending console character across loop iterations: dropping it on a
     // mutex miss made 's' and 'r' unreliable from a terminal.
     static char pending = 0;
@@ -510,6 +552,14 @@ void loop() {
         } else {
             Serial.println("  kein Display erkannt, Muster nicht gesendet");
         }
+    } else if (pending == 'c') {
+        // Takes the mutex itself, so it must not run inside the guarded block.
+        pending = 0;
+        dumpCsv();
+    } else if (pending == 'w') {
+        pending = 0;
+        wifiEnabled = !wifiEnabled;
+        if (wifiEnabled) startWifi(); else stopWifi();
     } else if (pending && xSemaphoreTake(guard, pdMS_TO_TICKS(0)) == pdTRUE) {
         const char c = pending;
         pending = 0;
