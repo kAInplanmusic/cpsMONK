@@ -339,7 +339,17 @@ static void drawLevelBar(int x, int y, int w, int h, float level, float low,
     (void)band;
 }
 static void drawOled() {
-    if (!oledReady || oledTest || xSemaphoreTake(guard, pdMS_TO_TICKS(5)) != pdTRUE) return;
+    if (!oledReady) return;
+    if (oledTest) {
+        // Refresh the test frame at the same rate as the normal UI. Sending it
+        // once made the test useless as a diagnostic: a panel that lost a single
+        // frame stayed dark and looked identical to a panel that lost power.
+        // Refreshed and still dark means the module is really unpowered or the
+        // controller keeps resetting, not that one frame went missing.
+        oled.clearDisplay(); oled.fillScreen(SSD1306_WHITE); oled.display();
+        return;
+    }
+    if (xSemaphoreTake(guard, pdMS_TO_TICKS(5)) != pdTRUE) return;
     const auto s = analyzer->state();
     const auto count = analyzer->count();
     const auto r = analyzer->result();
