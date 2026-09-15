@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>cpsMONK Live‑Dashboard</title>
+  <style>body{font-family:Arial,sans-serif;margin:20px;}#cps{font-size:3em;}#table{margin-top:20px;}</style>
+</head>
+<body>
+  <h1>Live‑CPS</h1>
+  <div id="cps">--</div>
+  <h2>Speicher‑Messungen</h2>
+  <pre id="table">Noch keine Daten</pre>
+  <script>
+    const ws = new WebSocket(location.protocol.replace('http','ws')+ '//' + location.host + '/ws');
+    ws.onmessage = e => { document.getElementById('cps').innerHTML = e.data+' CPS' };
+    ws.onclose   = () => { document.getElementById('cps').innerHTML='WS‑closed' };
+    function refresh() {
+      fetch('/measurements')
+        .then(r=>r.json())
+        .then(d=>{const tbl=document.getElementById('table');tbl.innerText='\n'+JSON.stringify(d,null,2);})
+        .catch(e=>{document.getElementById('table').innerText='Fehler: '+e});
+    }
+    setInterval(refresh,5000);
+  </script>
+</body>
+</html>
