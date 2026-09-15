@@ -37,6 +37,8 @@ static bool oledReady = false;
 static bool oledTest = false;
 // WLAN ist standardmaessig aus; das Geraet soll ohne AP benutzbar sein.
 static bool wifiEnabled = false;
+// Adresse, auf der das Panel geantwortet hat - fuer die Gesundheitspruefung.
+static uint8_t oledAddr = 0;
 static char apPassword[13];
 static char apName[24];
 static WebServer server(80);
@@ -433,9 +435,34 @@ static bool probeOled() {
     oledReady = false;
     for (uint8_t addr : {uint8_t(0x3c), uint8_t(0x3d)}) {
         Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) { oledReady = oled.begin(SSD1306_SWITCHCAPVCC, addr, false, false); break; }
+        if (Wire.endTransmission() == 0) {
+            oledAddr = addr;
+            oledReady = oled.begin(SSD1306_SWITCHCAPVCC, addr, false, false);
+            break;
+        }
     }
     return oledReady;
+}
+// After a brownout the controller answers on I2C and still swallows frames, but
+// it comes back with its display turned OFF - which looks exactly like a dead
+// panel. Asking only "does it ACK" was not enough: oledReady stayed true, so
+// nothing ever re-initialised it and the screen stayed dark. Re-assert the whole
+// init sequence periodically instead; that is invisible here because the UI
+// already clears and redraws four times a second. If the panel has left the bus
+// entirely, drop oledReady so the retry path picks it up again on return.
+static void checkOledHealth() {
+    if (!oledReady) return;
+    Wire.beginTransmission(oledAddr);
+    if (Wire.endTransmission() != 0) {
+        oledReady = false;
+        Serial.println("OLED nicht mehr am Bus - warte auf Rueckkehr");
+        return;
+    }
+    oled.begin(SSD1306_SWITCHCAPVCC, oledAddr, false, false);
+    // begin() switches the panel off and clears its RAM. Redraw immediately so
+    // the gap is milliseconds instead of up to one 250 ms UI period - that is
+    // what keeps this periodic re-init invisible.
+    drawOled();
 }
 // Diagnostics for the one part of the build that cannot be verified over USB:
 // the display. Run with 'o', repeated with 'k' at the other I2C clock.
@@ -593,6 +620,8 @@ void loop() {
         if (probeOled()) Serial.println("OLED nachtraeglich erkannt, Anzeige aktiv");
     }
     maybeAutoStart();
+    static uint32_t lastOledHealth = 0;
+    if (millis() - lastOledHealth > 5000) { lastOledHealth = millis(); checkOledHealth(); }
     static uint32_t lastDraw = 0;
     if (millis() - lastDraw > 250) { lastDraw = millis(); drawOled(); }
     delay(1);
