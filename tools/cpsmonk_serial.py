@@ -42,8 +42,9 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_BAUD = 115200
 
-# Reihenfolge wie in main.cpp (loop, Kommando '?').
-_FIELDS = ("state", "impacts", "seen", "cps", "form", "level", "amp", "dB", "noise", "thr", "win", "gate", "err")
+# Reihenfolge wie in main.cpp (loop, Kommando '?'). 'dc' steht vor 'err',
+# weil 'err' Freitext ist und dahinter nichts mehr geparst werden kann.
+_FIELDS = ("state", "impacts", "seen", "cps", "form", "level", "amp", "dB", "noise", "thr", "win", "gate", "dc", "err")
 
 # Feldreihenfolge wie in main.cpp (Kommando '?'). Alle Felder ausser dem
 # letzten sind nicht-gierig, damit 'err' als Freitext Leerzeichen enthalten
@@ -51,7 +52,7 @@ _FIELDS = ("state", "impacts", "seen", "cps", "form", "level", "amp", "dB", "noi
 _STATUS_RE = re.compile(r"\s+".join(f"{name}=(?P<{name}>.*?)" for name in _FIELDS[:-1]) + r"\s+err=(?P<err>.*)")
 
 _INT_FIELDS = {"impacts", "seen", "gate"}
-_FLOAT_FIELDS = {"cps", "form", "amp", "dB", "noise", "thr", "win"}
+_FLOAT_FIELDS = {"cps", "form", "amp", "dB", "noise", "thr", "win", "dc"}
 
 # Werte stammen aus levelName()/stateName() in firmware/xiao_oled/main.cpp.
 # Sie werden hier uebersetzt, aber immer zusammen mit dem Rohwert ausgegeben,
@@ -93,8 +94,14 @@ _LABELS = {
     "thr": "Schwelle",
     "win": "Fenster s",
     "gate": "Auto-Start frei",
+    "dc": "DC-Offset roh",
     "err": "Fehler",
 }
+
+# Ab diesem Betrag des rohen Mittelwerts gilt die I2S-Leitung als auffaellig.
+# Ein INMP441 liegt symmetrisch um 0; ein so grosser Offset deutet auf ein
+# Signal, das gegen eine Rail klemmt, oder auf eine unterbrochene Leitung.
+DC_SUSPECT = 0.5
 
 
 def find_port() -> str | None:
@@ -207,6 +214,7 @@ Danach diesen Befehl erneut ausfuehren. Nicht per DTR/RTS zuruecksetzen."""
 
 def print_human(status: dict) -> None:
     level_text = translate(_LEVEL_TEXT, status.get("level", ""))
+    state_raw = str(status.get("state", ""))
 
     def row(key: str, text: str) -> None:
         print(f"  {_LABELS.get(key, key):<22} {text}")
@@ -219,8 +227,30 @@ def print_human(status: dict) -> None:
     row("noise", f"{status.get('noise', 0.0):.7f}   (Schwelle {status.get('thr', 0.0):.6f})")
     row("win", f"{status.get('win', 0.0):.1f}")
     row("gate", "ja" if status.get("gate") else "nein")
+    dc = float(status.get("dc") or 0.0)
+    amp = float(status.get("amp") or 0.0)
+    row("dc", f"{dc:+.5f}" + ("   <-- auffaellig" if abs(dc) >= DC_SUSPECT else ""))
     error = status.get("err") or "-"
     row("err", str(error))
+
+    # Der Pegelindikator hat einen eigenen DC-Blocker. Ein auf die Rail
+    # geklemmter Eingang sieht damit aus wie "leise". Nur der rohe Mittelwert
+    # unterscheidet ihn von einem wirklich ruhigen Raum.
+    if abs(dc) >= DC_SUSPECT and amp < 0.05:
+        print(
+            f"\n  HINWEIS: DC-Offset {dc:+.5f} bei kleiner Amplitude ({amp:.6f}).\n"
+            "  Der Blockkondensator der Anzeige macht daraus 'leise' - das ist NICHT\n"
+            "  dasselbe wie ein ruhiger Raum. I2S-Datenleitung/INMP441 pruefen."
+        )
+    # Nur in den Zustaenden auswerten, in denen monitor() ueberhaupt laeuft.
+    # In calibrating/waiting/warmup/recording stehen diese Felder per Design auf 0.
+    elif state_raw in ("idle", "failed") and amp == 0.0 and dc == 0.0:
+        print(
+            "\n  HINWEIS: Alle Samples sind null - die I2S-Uhr laeuft (die Kalibrierung\n"
+            "  zaehlt Samples), aber die Datenleitung fuehrt nichts. Ein Software-Reset\n"
+            "  hilft dabei oft NICHT: das Mikrofon bleibt bestromt und kann nach einem\n"
+            "  Taktstopp stumm bleiben. Board richtig vom Strom trennen (USB abziehen)."
+        )
 
 
 def summary_line(status: dict) -> str:

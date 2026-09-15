@@ -105,6 +105,9 @@ static void statusInto(JsonObject j) {
     j["thresholdFloor"] = analyzer->config.thresholdFloor;
     j["level"] = levelName(analyzer->levelAssessment());
     j["levelAmplitude"] = r.levelAmplitude; j["levelDb"] = r.levelDb;
+    // Raw-input average, i.e. the DC offset on the I2S line. Combined with
+    // levelAmplitude this separates a rail-stuck input from a quiet room.
+    j["levelDc"] = analyzer->levelDc();
     j["levelFloor"] = cps::LEVEL_SILENT_FLOOR;
     j["autoArm"] = analyzer->levelWasGood();
     // Band edges so the UI can draw the target zone and scale the bar honestly.
@@ -451,12 +454,16 @@ void loop() {
         // idle forever on a build without a button.
         if (c == '?') {
             const auto& r = analyzer->result();
+            // 'dc' is the raw-input average: after the indicator's DC blocker it
+            // is the only way to tell a rail-stuck line (dc ~1, amp small) from a
+            // genuinely quiet room (dc ~0, amp small). Keep 'err' last, it is free
+            // text and may contain spaces.
             Serial.printf("state=%s impacts=%u seen=%u cps=%.3f form=%.2f level=%s amp=%.6f dB=%.1f "
-                          "noise=%.7f thr=%.6f win=%.1fs gate=%d err=%s\n",
+                          "noise=%.7f thr=%.6f win=%.1fs gate=%d dc=%.5f err=%s\n",
                 stateName(analyzer->state()), unsigned(analyzer->count()), unsigned(analyzer->seen()),
                 r.cps, r.shapeSimilarity, levelName(analyzer->levelAssessment()),
                 r.levelAmplitude, r.levelDb, r.noiseRms, r.threshold, r.windowSeconds,
-                analyzer->levelWasGood() ? 1 : 0, analyzer->error());
+                analyzer->levelWasGood() ? 1 : 0, analyzer->levelDc(), analyzer->error());
         }
         unlock();
     }

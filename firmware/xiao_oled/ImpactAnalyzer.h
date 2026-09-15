@@ -58,6 +58,12 @@ static const float LEVEL_DECAY = 0.99997f;
 // Below this amplitude the input is numerical noise on a floating/dead data
 // line rather than room sound. INMP441 self-noise is far above it.
 static const float LEVEL_SILENT_FLOOR = 1e-5f;
+// DC blocker for the idle level indicator. Same corner (~103 Hz at the 32 kHz
+// sample rate) as the one in process(), but a separate filter instance: the
+// measurement path must not change because the indicator was fixed.
+static const float MONITOR_DC_COEFF = 0.98f;
+// Leaky average for the raw-input diagnostic (levelDc()). ~0.3 s at 32 kHz.
+static const float MONITOR_DC_AVG_COEFF = 0.0001f;
 
 enum class State { Idle, Calibrating, WaitingForMotor, Warmup, Recording, Complete, Failed };
 // Level-indicator band assessment, reported while idle so the operator can set
@@ -187,8 +193,26 @@ public:
     // while the peak-hold below tracks exactly what changes when the microphone
     // is moved. The hold decays with a ~500 ms time constant so the reading
     // follows the operator and does not freeze on a single loud event.
+    //
+    // The indicator has its OWN DC blocker. It used to peak-hold the raw sample,
+    // which made it read a DC offset as loud signal: a miswired INMP441 drove the
+    // line to ~0.98 of full scale and the indicator reported "loud" permanently,
+    // while the measurement path (which blocks DC in process()) saw a quiet room.
+    // Both readings were then internally consistent and the fault was invisible.
+    // The blocker here is deliberately SEPARATE from the one in process() so the
+    // measurement numerics stay byte-for-byte unchanged.
+    //
+    // Because a blocked input can also mean "stuck at a rail", levelDc() reports
+    // the raw average alongside. A rail-stuck line shows dc ~0.98 with a small
+    // amplitude; a genuinely quiet room shows dc ~0 and a small amplitude. Only
+    // the pair tells those two apart.
     void monitor(float input) {
-        const float magnitude = std::fabs(input);
+        const float hp = input - monitorPrevInput_ + MONITOR_DC_COEFF * monitorPrevHp_;
+        monitorPrevInput_ = input;
+        monitorPrevHp_ = hp;
+        // Slow average of the raw input, for diagnostics only. ~0.3 s at 32 kHz.
+        levelDc_ += MONITOR_DC_AVG_COEFF * (input - levelDc_);
+        const float magnitude = std::fabs(hp);
         // Multiplicative decay, NOT a fixed subtraction. A constant decrement
         // eats small signals entirely between strokes (at 150 CPS there are 213
         // idle samples per cycle) while barely touching loud ones, so a quiet
@@ -200,6 +224,8 @@ public:
         // Amplitude relative to full scale, reported in dB for the UI.
         result_.levelDb = levelHold_ > 1e-9f ? 20.0f * std::log10(levelHold_) : -180.0f;
     }
+    // Average of the RAW input, i.e. the DC offset on the I2S line. Diagnostic.
+    float levelDc() const { return levelDc_; }
     Level levelAssessment() const {
         // A dead data line shows only numerical noise; INMP441 self-noise sits
         // orders of magnitude above that, so a floor separates "no signal" from
@@ -294,6 +320,10 @@ private:
     double calibrationEnergy_;
     float previousInput_, previousHp_, envelope_, peak_;
     float levelHold_ = 0;
+    // Own DC-blocker state for the idle indicator, plus the raw-input average.
+    // Deliberately separate from previousInput_/previousHp_ so fixing the
+    // indicator cannot shift a single measurement sample.
+    float monitorPrevInput_ = 0, monitorPrevHp_ = 0, levelDc_ = 0;
     float windowSeconds_;
     bool armed_, pending_, gateOpen_ = false, levelGoodSeen_ = false;
     char error_[96];
